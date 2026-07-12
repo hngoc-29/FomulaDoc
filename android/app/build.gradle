@@ -1,0 +1,145 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // The Flutter Gradle Plugin must be applied after the Android and Kotlin
+    // Gradle plugins.
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader("UTF-8") { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode")
+if (flutterVersionCode == null) {
+    flutterVersionCode = "1"
+}
+
+def flutterVersionName = localProperties.getProperty("flutter.versionName")
+if (flutterVersionName == null) {
+    flutterVersionName = "1.0.0"
+}
+
+// ── Release signing ──────────────────────────────────────────────────────
+// Reads from android/key.properties, which is gitignored and must be
+// created locally (see android/key.properties.example for the format and
+// android/KEYSTORE_SETUP.md for step-by-step instructions on generating
+// the actual .jks keystore with `keytool`).
+//
+// Falls back to debug signing with a build-time warning when the file is
+// absent, so `flutter build apk --release` still produces an installable
+// (but NOT Play-Store-uploadable) artifact for local testing without
+// requiring every contributor to have signing keys.
+def keystorePropertiesFile = rootProject.file("key.properties")
+def keystoreProperties = new Properties()
+def hasReleaseSigning = keystorePropertiesFile.exists()
+if (hasReleaseSigning) {
+    keystorePropertiesFile.withReader("UTF-8") { reader ->
+        keystoreProperties.load(reader)
+    }
+} else {
+    logger.warn(
+        "WARNING: android/key.properties not found — release build will be " +
+        "signed with the DEBUG key and CANNOT be uploaded to Google Play. " +
+        "See android/KEYSTORE_SETUP.md to set up real release signing."
+    )
+}
+
+android {
+    namespace = "com.formuladoc.app"
+
+    // compileSdk / targetSdk / ndkVersion resolve automatically to values
+    // matching whichever Flutter SDK is installed — avoids hardcoding
+    // numbers that could drift out of sync with the toolchain.
+    compileSdk = flutter.compileSdkVersion
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    // kotlinOptions {} was removed in Kotlin 2.2 (deprecated since 2.0) —
+    // the replacement `kotlin { compilerOptions {} }` block is declared
+    // below, outside this `android {}` block (see bottom of file).
+
+    sourceSets {
+        main.java.srcDirs += "src/main/kotlin"
+    }
+
+    defaultConfig {
+        applicationId = "com.formuladoc.app"
+        // Per project spec: Android Min SDK 24, target = latest supported
+        // by the installed Flutter SDK.
+        minSdkVersion 24
+        targetSdkVersion flutter.targetSdkVersion
+        versionCode flutterVersionCode.toInteger()
+        versionName flutterVersionName
+        multiDexEnabled true
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(keystoreProperties["storeFile"])
+                storePassword keystoreProperties["storePassword"]
+                keyAlias keystoreProperties["keyAlias"]
+                keyPassword keystoreProperties["keyPassword"]
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // Uses the real release key when android/key.properties exists
+            // (see KEYSTORE_SETUP.md); otherwise falls back to the debug
+            // key so local builds still work, with a warning printed above.
+            signingConfig = hasReleaseSigning
+                ? signingConfigs.release
+                : signingConfigs.debug
+            // Deliberately OFF for the first release: R8 shrinking/
+            // obfuscation failures typically show up as RUNTIME crashes or
+            // silent misbehavior on real devices, not build errors — so a
+            // "green" CI build gives no guarantee it's actually safe.
+            // Given several plugins here (pdfx, flutter_tts,
+            // receive_sharing_intent) aren't guaranteed to have complete
+            // consumer ProGuard rules, enabling this needs real on-device
+            // testing first. proguard-rules.pro is wired up and ready —
+            // flip minifyEnabled/shrinkResources to true once verified.
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"),
+                           "proguard-rules.pro"
+        }
+        debug {
+            applicationIdSuffix = ".debug"
+        }
+    }
+
+    packagingOptions {
+        resources {
+            excludes += ["META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE"]
+        }
+    }
+}
+
+// Replacement for the removed `android { kotlinOptions { jvmTarget = ... } }`
+// DSL (kotlinOptions was deprecated in Kotlin 2.0, fully removed in 2.2).
+// This is now a top-level block, sibling to `android {}`, not nested inside it.
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+flutter {
+    source = "../.."
+}
+
+dependencies {
+    implementation "androidx.multidex:multidex:2.0.1"
+}

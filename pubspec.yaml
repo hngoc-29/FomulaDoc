@@ -1,0 +1,62 @@
+name: formuladoc
+description: >
+  FormulaDoc — Production-ready mobile document viewer with first-class
+  support for Microsoft Word mathematical equations (OMML → LaTeX).
+  Built as the foundation for a future cross-platform document platform.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ── Core document processing ──────────────────────────────────────────────
+  # ZIP extraction (DOCX is a ZIP archive)
+  archive: ^4.0.9
+  # XML parsing (word/document.xml, styles.xml, etc.)
+  xml: ^7.0.1
+  # PDF rendering — native platform renderer (Android PdfRenderer, iOS PDFKit)
+  pdfx: ^2.8.1
+  # Share files via system share sheet
+  share_plus: ^10.1.4
+  # Text-to-speech for "read aloud" feature
+  flutter_tts: ^4.2.0
+  # System print dialog for existing PDF bytes (PDF documents only)
+  printing: ^5.13.4
+
+  # ── File handling ─────────────────────────────────────────────────────────
+  # Device temp/app directories for caching
+  path_provider: ^2.1.5
+  # Manual file picker (user opens DOCX from storage)
+  file_picker: ^10.3.2
+  # Android "Open with" intent + iOS Share Extension handler
+  receive_sharing_intent: ^1.8.1
+
+  # ── Rendering ─────────────────────────────────────────────────────────────
+  # Cached network images (future cloud documents)
+  cached_network_image: ^3.4.1
+
+  # ── State management ──────────────────────────────────────────────────────
+  flutter_riverpod: ^2.6.1
+
+  # ── Persistence ───────────────────────────────────────────────────────────
+  # Local storage for file history, favorites, reading position
+  shared_preferences: ^2.3.3
+
+  # ── Utilities ─────────────────────────────────────────────────────────────
+  path: ^1.9.1
+  intl: ^0.19.0
+  url_launcher: ^6.3.1
+  collection: ^1.19.0
+  flutter_math_fork: ^0.7.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

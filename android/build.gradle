@@ -1,0 +1,52 @@
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = "../build"
+
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+
+// Force every subproject (including third-party plugins like
+// receive_sharing_intent / file_picker) to compile Java and Kotlin against
+// the same JVM target. Without this, plugins that don't pin their own
+// Kotlin jvmTarget inherit whatever JDK is running Gradle (17 here), while
+// their Java sources stay on the AGP default (1.8), causing:
+// "Inconsistent JVM-target compatibility ... (1.8) and ... (17)"
+//
+// NOTE: this block must be registered BEFORE evaluationDependsOn(":app")
+// below, since that call forces immediate evaluation of :app — registering
+// afterEvaluate on an already-evaluated project throws.
+subprojects {
+    afterEvaluate { proj ->
+        if (proj.hasProperty("android")) {
+            proj.android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+            }
+        }
+        // kotlinOptions {} was removed in Kotlin 2.2 (deprecated since 2.0).
+        // compilerOptions.jvmTarget is now a typed Property<JvmTarget>
+        // (enum), not a raw String, so it needs the JvmTarget.JVM_17
+        // constant rather than the string "17" used previously.
+        proj.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            compilerOptions {
+                jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            }
+        }
+    }
+}
+
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

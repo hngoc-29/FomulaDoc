@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shown for a brief moment while Android loads the app, before Flutter
+     takes over and draws the real UI (HomeScreen). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="#FF1565C0" />
+</layer-list>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FormulaDoc</string>
+    <string name="open_with_formuladoc">Open with FormulaDoc</string>
+
+    <!-- App shortcuts (long-press launcher icon) -->
+    <string name="shortcut_recent_short">Gần đây</string>
+    <string name="shortcut_recent_long">Mở tài liệu gần đây nhất</string>
+    <string name="shortcut_pick_short">Chọn file</string>
+    <string name="shortcut_pick_long">Chọn file từ thiết bị</string>
+</resources>

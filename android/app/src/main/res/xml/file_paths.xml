@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider paths for receive_sharing_intent and file_picker -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Temp files created by receive_sharing_intent -->
+    <cache-path name="shared_temp" path="." />
+    <external-cache-path name="external_shared_temp" path="." />
+    <!-- App-internal files -->
+    <files-path name="files" path="." />
+    <external-files-path name="external_files" path="." />
+</paths>

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Static app shortcuts, shown when the user long-presses the FormulaDoc
+  launcher icon on the home screen.
+
+  Icons intentionally reuse the app's own @mipmap/ic_launcher rather than a
+  new custom vector drawable — this guarantees the resource already compiles
+  correctly (it's the app's main icon), avoiding any risk from an untested
+  new asset.
+
+  Each shortcut launches MainActivity with a "shortcut_action" string extra
+  that MainActivity.kt reads and relays to the Dart side via the
+  formuladoc/shortcuts MethodChannel.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:shortcutId="open_recent"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_recent_short"
+        android:shortcutLongLabel="@string/shortcut_recent_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.formuladoc.app"
+            android:targetClass="com.formuladoc.app.MainActivity">
+            <extra android:name="shortcut_action" android:value="open_recent" />
+        </intent>
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="pick_file"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_pick_short"
+        android:shortcutLongLabel="@string/shortcut_pick_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.formuladoc.app"
+            android:targetClass="com.formuladoc.app.MainActivity">
+            <extra android:name="shortcut_action" android:value="pick_file" />
+        </intent>
+    </shortcut>
+
+</shortcuts>

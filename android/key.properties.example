@@ -1,0 +1,10 @@
+# Copy this file to `key.properties` (same folder) and fill in real values.
+# `key.properties` itself is gitignored — NEVER commit real signing secrets.
+#
+# See KEYSTORE_SETUP.md for how to generate the .jks keystore file these
+# values refer to.
+
+storeFile=../app-release-key.jks
+storePassword=CHANGE_ME
+keyAlias=formuladoc
+keyPassword=CHANGE_ME
