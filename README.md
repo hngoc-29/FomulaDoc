@@ -1,446 +1,188 @@
 # FormulaDoc
 
-> **The mobile DOCX viewer that finally gets equations right.**
+**Trình xem & chỉnh sửa Word, PDF, Excel trên Android — hiển thị đúng công
+thức toán/hoá mà các app khác thường bỏ qua hoặc hiện lỗi.**
 
-A production-ready Flutter application that opens Microsoft Word documents and
-correctly renders mathematical equations (OMML → LaTeX) on mobile.
+Ứng dụng Flutter chạy hoàn toàn offline, không có backend, không thu thập
+dữ liệu người dùng.
 
 ---
 
-## Why FormulaDoc?
+## Vì sao có FormulaDoc
 
-| Problem with other readers | FormulaDoc solution |
+Hầu hết trình xem DOCX trên di động render sai hoặc bỏ qua hoàn toàn công
+thức toán học — kể cả những công thức tạo bằng MathType/Equation Editor cũ
+(vẫn cực kỳ phổ biến trong đề thi, tài liệu học thuật tiếng Việt). FormulaDoc
+giải quyết đúng vấn đề đó bằng 2 pipeline riêng biệt:
+
+| Loại công thức | Cách xử lý |
 |---|---|
-| Equations show raw XML or disappear | ✅ Full OMML → LaTeX → flutter_math_fork pipeline |
-| Tables render as garbled text | ✅ Table renderer with merged cells, alternating rows |
-| Formatting lost (bold/italic/colour) | ✅ Complete character-level style support |
-| App freezes on large documents | ✅ `compute()` isolate — parser never blocks UI |
-| Can't "Open with" from file manager | ✅ Android intent filter registered |
-| Re-opening is slow | ✅ LRU in-memory cache (5 documents) |
-| Can't search inside a document | ✅ Full-text search with highlights |
+| OMML hiện đại (`<m:oMath>`, Word 2007+) | Parse trực tiếp sang LaTeX, hiển thị qua flutter_math_fork/KaTeX |
+| MathType/Equation Editor cũ (ảnh WMF nhúng) | Renderer WMF viết riêng bằng Kotlin/Canvas — parse từng GDI record (font, pen, text run) và vẽ lại thành PNG, vì Android không có decoder WMF sẵn |
 
----
+## Tính năng
 
-## Project Status
+**Xem tài liệu**
+- Word (.docx), PDF (.pdf), Excel (.xlsx)
+- Công thức toán (OMML + WMF/MathType), bảng biểu (kể cả merged cell), ảnh, hyperlink
+- Zoom mượt (pinch + double-tap reset), bôi đen/copy văn bản
+- 4 chế độ đọc: Sáng / Sepia / Tối / Tương phản cao
+- Cỡ chữ, giãn dòng, lề tuỳ chỉnh
+- Mục lục tự động từ heading, đánh dấu trang (bookmark)
+- Tìm kiếm trong tài liệu (phân biệt hoa/thường, toàn từ) + tìm xuyên lịch sử
+- Đọc to bằng giọng nói (TTS tiếng Việt)
+- Tự động nhớ vị trí đọc dở, kể cả với PDF (theo số trang)
 
-| Phase | Feature set | Status |
-|---|---|---|
-| **1 — Foundation** | Architecture · DOCX parse · Open With · Basic text | ✅ Complete |
-| **2 — Rich Content** | Images · Tables · Lists · Hyperlinks | ✅ Complete |
-| **3 — Math Engine** | OMML parser · 200+ symbols · flutter_math_fork | ✅ Complete |
-| **4 — Polish** | In-doc search · Scroll cache · Position indicator | ✅ Complete |
-| **5 — Platform** | Parser registry · DOCX serializer · Edit model · Settings | ✅ Complete |
+**Chỉnh sửa**
+- DOCX: đổi Đậm/Nghiêng/Gạch chân, gõ chữ trực tiếp (đoạn văn 1 định dạng)
+- XLSX: sửa giá trị từng ô, lưu lại không ảnh hưởng sheet/ô khác
+- Tự động backup phiên bản trước mỗi lần lưu, khôi phục được khi cần
 
-**Overall: ~95% complete.** Remaining: PDF viewer, collaborative editing.
+**Quản lý file**
+- Lịch sử mở gần đây, yêu thích, bộ sưu tập (gắn nhãn theo chủ đề)
+- Xoá hàng loạt, mở bằng file manager/Gmail/Drive ("Open with")
+- Shortcut giữ icon app: mở file gần nhất / chọn file nhanh
+- Thống kê đọc cá nhân (thời gian đọc, streak ngày liên tiếp)
 
----
+**Khác**
+- Chia sẻ file qua share sheet hệ thống
+- In trực tiếp file PDF
 
-## Quick Start
+## Không hỗ trợ (biết trước, có lý do)
 
-```bash
-# 1. Install Flutter 3.44.1
-flutter --version   # must be 3.44.1
+- **PowerPoint (.pptx)** — chưa implement
+- **Mục lục nhúng sẵn trong PDF** (PDF outline/bookmark) — package `pdfx`
+  đang dùng không expose API đọc outline; cần đổi sang `pdfrx` hoặc thêm
+  native PDFium binding mới làm được, chưa làm vì rủi ro build cao
+- **Gõ chữ trực tiếp cho đoạn văn có nhiều định dạng khác nhau trong cùng
+  câu** — chỉ đổi được style qua bôi đen. Lý do: thuật toán diff chính xác
+  cho nhiều run cùng lúc rủi ro làm hỏng nội dung thật khi lưu, nên cố tình
+  giới hạn ở trường hợp an toàn (đoạn 1 định dạng)
+- **In DOCX/XLSX** — chỉ PDF in được (dùng thẳng byte gốc); DOCX/XLSX cần
+  layout lại chính xác thành PDF phân trang, việc lớn hơn nhiều
 
-# 2. Get dependencies
-cd formuladoc
-flutter pub get
-
-# 3. Run on connected Android device
-flutter run
-
-# 4. Build release APK
-flutter build apk --release
-# → build/app/outputs/flutter-apk/app-release.apk
-
-# 5. Run all tests (~155 test cases, no device needed)
-flutter test
-```
-
----
-
-## Architecture
+## Kiến trúc
 
 ```
-DOCX file (bytes)
-       │
-       ▼
-DocumentParserRegistry        ← auto-selects correct parser
-       │
-       ▼
-DocxParser.parse()            ← runs in compute() isolate
-  │
-  ├── DocxExtractor            ZIP → raw XML strings
-  ├── StyleResolver            word/styles.xml → style map
-  ├── NumberingParser          word/numbering.xml → list types
-  ├── XmlBodyParser            document.xml → DocumentModel
-  └── OmmlParser               <m:oMath> → LaTeX string
-       │
-       ▼
-DocumentModel                 ← pure Dart, isolate-safe
-  blocks: List<DocumentBlock> ← sealed class hierarchy
-  images: Map<String,Uint8List>
-  parseWarnings: List<String>
-       │
-       ▼
-DocumentRendererWidget        ← ConsumerWidget, watches searchProvider
-  switch(block) {
-    ParagraphBlock → ParagraphRenderer  (with SearchHighlight)
-    HeadingBlock   → HeadingRenderer    (with SearchHighlight)
-    EquationBlock  → EquationRenderer   (Math.tex / fallback)
-    ImageBlock     → Image.memory
-    TableBlock     → Table widget
-    ListBlock      → Column + bullets
-    PageBreakBlock → Divider
-    HyperlinkBlock → TapGestureRecognizer
+File (bytes)
+     │
+     ▼
+DocumentParserRegistry        ← tự chọn parser theo định dạng
+     │
+     ├── DocxParser    (chạy trong compute() isolate, không block UI)
+     ├── PdfParser     (đọc qua pdfx, native PdfRenderer)
+     └── XlsxParser    (tự parse ZIP+XML, không phụ thuộc package ngoài)
+     │
+     ▼
+DocumentModel                 ← Dart thuần, an toàn isolate
+  blocks: List<DocumentBlock> ← sealed class
+  images: Map<String, Uint8List>
+     │
+     ▼
+DocumentRendererWidget
+  switch (block) {
+    ParagraphBlock     → ParagraphRenderer
+    HeadingBlock       → HeadingRenderer
+    EquationBlock      → EquationRenderer (LaTeX/KaTeX)
+    ImageBlock         → Image.memory (WMF đã convert sẵn sang PNG)
+    TableBlock         → grid có normalize merged-cell
+    PdfDocumentBlock   → PdfView (pdfx)
+    SpreadsheetBlock   → grid editable
   }
 ```
 
-### Sealed Block Hierarchy
+### WMF equation renderer (native Kotlin)
 
-```dart
-sealed class DocumentBlock { ... }
+Phần khó nhất của dự án. `WmfRenderer.kt` tự parse binary WMF — đọc placeable
+header lấy bounding box, loop qua GDI record (`CREATEFONTINDIRECT`,
+`SELECTOBJECT`, `EXTTEXTOUT` kèm mảng `dx[]` để canh khoảng cách ký tự chính
+xác từng chữ), vẽ lại bằng Android `Canvas`. Vài điểm quan trọng đã fix được
+qua thực tế:
 
-final class ParagraphBlock  extends DocumentBlock  // ✅ Phase 1
-final class HeadingBlock    extends DocumentBlock  // ✅ Phase 1
-final class PageBreakBlock  extends DocumentBlock  // ✅ Phase 1
-final class EquationBlock   extends DocumentBlock  // ✅ Phase 3
-final class ImageBlock      extends DocumentBlock  // ✅ Phase 2
-final class TableBlock      extends DocumentBlock  // ✅ Phase 2
-final class ListBlock       extends DocumentBlock  // ✅ Phase 2
-final class HyperlinkBlock  extends DocumentBlock  // ✅ Phase 2
-```
+- **Object table phải dùng slot thấp nhất còn trống** (theo đúng WMF spec),
+  không phải tăng dần tuần tự — sai chỗ này làm Symbol font và Times New
+  Roman bị hoán đổi cho nhau
+- **Bitmap phải cộng thêm padding bằng chiều cao font lớn nhất** — nếu không,
+  chữ ở gần đáy công thức bị cắt mất phần dưới
+- **Bảng map Symbol font → Unicode** phải đủ range `0xE6–0xF1` — đây là các
+  ký tự vẽ ngoặc nhọn nhiều dòng (`⎧⎨⎩`) dùng trong công thức cấu tạo hoá học,
+  thiếu sẽ hiện dấu `?`
 
-Adding a new block type causes a compile-time error in every renderer
-— guaranteeing nothing is silently skipped.
+Kết quả PNG được cache lại trong `DocumentModel.images`, render qua
+`Image.memory()` như ảnh thường — không cần sửa gì ở tầng renderer.
 
-### State Management (Riverpod 2.x)
-
-```
-ProviderScope
-├── documentNotifierProvider   (autoDispose) → DocumentState
-│     status: initial|loading|loaded|error
-│     model: DocumentModel?
-│
-├── searchNotifierProvider     (autoDispose) → SearchState
-│     query, results, currentIndex, highlights per block
-│
-├── historyNotifierProvider    → HistoryState
-│     recentFiles, favorites
-│
-├── editorNotifierProvider     (autoDispose) → EditorState
-│     original, current, history, hasUnsavedChanges
-│
-└── service providers (singletons)
-      documentCacheProvider    LRU 5-document cache
-      parserRegistryProvider   format → parser map
-      docxSerializerProvider   DocumentModel → DOCX bytes
-      intentHandlerProvider    Android "Open with"
-```
-
----
-
-## Math Engine (Phase 3)
-
-Supported OMML → LaTeX conversions:
-
-| OMML element | LaTeX | Example |
-|---|---|---|
-| `<m:f>` | `\frac{a}{b}` | Fractions |
-| `<m:rad>` | `\sqrt[n]{x}` | Roots |
-| `<m:sSup>` | `x^{n}` | Superscript |
-| `<m:sSub>` | `x_{n}` | Subscript |
-| `<m:sSubSup>` | `x_{n}^{m}` | Sub+superscript |
-| `<m:nary>` ∫∑∏ | `\int_{a}^{b}` | Integrals, sums |
-| `<m:d>` | `\left( \right)` | Auto-brackets |
-| `<m:m>` | `\begin{matrix}` | Matrices |
-| `<m:limLow>` | `\lim_{x→0}` | Limits |
-| `<m:acc>` | `\hat{x}` | Accents |
-| `<m:eqArr>` | `\begin{aligned}` | Equation arrays |
-| `<m:borderBox>` | `\boxed{x}` | Boxed equations |
-
-**200+ Unicode → LaTeX mappings** including all Greek letters, operators,
-arrows, set symbols, number sets (ℝℕℤℚℂ), and special symbols.
-
-Fallback chain:
-1. `Math.tex(latex)` — flutter_math_fork renders KaTeX
-2. On KaTeX parse error → show raw LaTeX + error message (expandable)
-3. On OMML conversion failure → show OMML source (expandable)
-
----
-
-## DOCX Serializer (Phase 5)
-
-`DocxSerializer` converts a `DocumentModel` back to valid `.docx` bytes:
-
-```dart
-final serializer = DocxSerializer();
-final bytes = await serializer.serialize(model);
-await File('output.docx').writeAsBytes(bytes);
-```
-
-Supported output:
-- ✅ Paragraphs (bold, italic, underline, colour, font size)
-- ✅ Headings H1–H6 with correct Word styles
-- ✅ Page breaks
-- ✅ Tables (basic, no rowspan)
-- ✅ Ordered and unordered lists
-- ✅ Document metadata (title, author)
-- ✅ Images (embedded as media files)
-- 🔜 Equations → serialize back to `<m:oMath>` (Phase 6)
-- 🔜 Hyperlinks → `<w:hyperlink>` (Phase 6)
-
-**Round-trip verified**: serialize → re-parse → same content.
-
----
-
-## Parser Registry (Phase 5)
-
-Adding a new format requires exactly 3 steps:
-
-```dart
-// 1. Implement DocumentParserInterface
-class PdfParser implements DocumentParserInterface {
-  @override DocumentFormat get format => DocumentFormat.pdf;
-  @override Future<DocumentModel> parse(DocumentSource source) async { ... }
-}
-
-// 2. Register at startup (main.dart)
-DocumentParserRegistry.instance.register(PdfParser());
-
-// 3. Nothing else changes — DocumentNotifier auto-selects it
-```
-
----
-
-## Edit System (Phase 5)
-
-Sealed edit hierarchy with undo/redo (100 levels):
-
-```dart
-sealed class DocumentEdit { ... }
-
-// Text operations
-InsertTextEdit    // insert at char offset in run
-DeleteTextEdit    // delete char range across runs
-ReplaceTextEdit   // atomic replace
-
-// Style operations  
-ApplyRunStyleEdit      // bold/italic/colour over char range
-SetAlignmentEdit       // paragraph alignment
-
-// Structure operations
-InsertBlockEdit        // add block at position
-DeleteBlockEdit        // remove block (preserves for undo)
-MoveBlockEdit          // drag-and-drop reorder
-ChangeHeadingLevelEdit // H1↔H2↔paragraph
-
-// Composite
-CompositeEdit          // batch multiple edits → one undo step
-```
-
-```dart
-// Usage
-final editor = ref.read(editorNotifierProvider.notifier);
-editor.loadDocument(model);
-editor.applyBold('block_id', 0, 5);   // bold chars 0-5
-editor.undo();                          // revert bold
-editor.applyEdit(InsertBlockEdit(...));
-final bytes = await editor.exportDocx();
-```
-
----
-
-## Android Open With
-
-FormulaDoc registers three intent filters in `AndroidManifest.xml`:
-
-1. **MIME type** `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
-   → works with Google Drive, Gmail, modern file managers
-2. **File URI + MIME** → older file managers
-3. **Extension pattern** `.docx` → OEM file managers sending `*/*`
-
-The `PlatformIntentHandler` wraps `receive_sharing_intent` and emits a
-`Stream<String>` of file paths. Both cold-start and foreground intents
-are handled.
-
----
-
-## Project Structure
+## Cấu trúc thư mục
 
 ```
 lib/
-├── core/
-│   ├── constants/          AppConstants, ThemeConstants
-│   ├── errors/             Typed exception hierarchy (sealed)
-│   └── utils/              AppLogger, FileUtils
-│
+├── core/                  constants, exceptions, logger, file utils
 ├── data/
-│   ├── models/             DocumentBlock (sealed), DocumentModel,
-│   │                       FileRecord, SearchResult, DocumentEdit,
-│   │                       EditHistory
+│   ├── models/            DocumentBlock (sealed), DocumentModel,
+│   │                      FileRecord, DocumentEdit, EditHistory
 │   ├── parsers/
-│   │   ├── parser_registry.dart    ← plug-and-play format registry
-│   │   ├── docx/           DocxParser, DocxExtractor, XmlBodyParser,
-│   │   │                   StyleResolver, NumberingParser, DrawingParser
-│   │   ├── omml/           OmmlParser (OMML → LaTeX, 641 lines)
-│   │   ├── pdf/            PdfParser (stub → Phase 6)
-│   │   ├── pptx/           PptxParser (stub → Phase 6)
-│   │   └── xlsx/           XlsxParser (stub → Phase 6)
-│   ├── repositories/       HistoryRepository (SharedPreferences)
-│   └── serializers/        DocxSerializer (DocumentModel → ZIP)
-│
-├── domain/
-│   ├── abstractions/       DocumentSource, DocumentParserInterface,
-│   │                       DocumentFormat
-│   ├── cloud/              CloudProvider (abstract), CloudDocument
-│   └── usecases/           OpenDocumentUseCase, GetRecentFilesUseCase
-│
-├── services/               FileService, HistoryService,
-│                           DocumentSearchService, DocumentCacheService,
-│                           HyperlinkService
-├── platform/               PlatformIntentHandler
-│
+│   │   ├── docx/          DocxParser + extractor/style/numbering/drawing
+│   │   ├── omml/          OMML → LaTeX (200+ symbol mapping)
+│   │   ├── pdf/           PdfParser (pdfx)
+│   │   └── xlsx/          XlsxParser (tự parse ZIP+XML)
+│   ├── repositories/      HistoryRepository (SharedPreferences)
+│   └── serializers/       DocxSerializer, XlsxSerializer (ghi ngược file)
+├── domain/                abstractions (DocumentSource, ParserInterface),
+│                          CloudProvider (sẵn interface, chưa implement)
+├── services/               FileService, HistoryService, DocumentSearchService,
+│                          DocumentCacheService, HyperlinkService,
+│                          ReadingStatsService, VersionHistoryService
+├── platform/               PlatformIntentHandler (Open with),
+│                          ShortcutService, WmfRenderService (channel → Kotlin)
 └── presentation/
-    ├── providers/          DocumentNotifier, HistoryNotifier,
-    │                       SearchNotifier, EditorNotifier
-    │                       + service_providers.dart
-    ├── theme/              AppTheme (light + dark)
-    ├── screens/
-    │   ├── home/           HomeScreen (recent + favorites + search)
-    │   ├── viewer/         ViewerScreen (zoom + search + scroll)
-    │   └── settings/       SettingsScreen (cache, theme, formats)
-    ├── renderers/          DocumentRendererWidget (ConsumerWidget),
-    │                       ParagraphRenderer, HeadingRenderer,
-    │                       EquationRenderer, TextRunBuilder
-    └── widgets/            DocumentSearchBar, ScrollPositionIndicator
+    ├── providers/          Riverpod: document/search/history/editor/
+    │                      font_size/reading_prefs/theme/shortcut
+    ├── renderers/           DocumentRendererWidget + renderer từng block
+    └── screens/             home/ viewer/ editor/ settings/
+
+android/app/src/main/kotlin/com/formuladoc/app/
+├── MainActivity.kt        MethodChannel: WMF render + shortcut relay
+└── WmfRenderer.kt         Parser + renderer WMF binary → PNG
 ```
 
----
-
-## Testing
+## Bắt đầu
 
 ```bash
-# All tests (~160 total, run without a device)
-flutter test
+flutter --version        # đã test với Flutter stable, Dart >=3.4.0
 
-# By category
-flutter test test/data/parsers/docx_parser_test.dart   # DOCX parsing
-flutter test test/data/parsers/omml_parser_test.dart   # OMML → LaTeX (50 cases)
-flutter test test/services/document_search_service_test.dart  # search
-flutter test test/phase5_test.dart                     # serializer + registry
+cd formuladoc
+flutter pub get
 
-# Coverage
-flutter test --coverage
-genhtml coverage/lcov.info -o coverage/html
-open coverage/html/index.html
+flutter run                        # chạy trên máy/emulator đã kết nối
+flutter build apk --release        # build APK (cài trực tiếp / APKPure)
+flutter build appbundle --release  # build AAB (bắt buộc cho CH Play)
 ```
 
----
+### Build release cần chữ ký thật
 
-## Adding Cloud Sync (Phase 6)
+Mặc định build release dùng debug key (chỉ để test local). Trước khi phát
+hành, làm theo `android/KEYSTORE_SETUP.md` để tạo keystore thật — không có
+bước này, Google Play sẽ từ chối file, và người dùng APKPure sẽ gặp lỗi
+"signature mismatch" ở lần cập nhật tiếp theo nếu bạn đổi key giữa chừng.
 
-```dart
-// 1. Implement CloudProvider
-class GoogleDriveProvider extends CloudProvider {
-  @override String get id          => 'google_drive';
-  @override String get displayName => 'Google Drive';
-  // ... implement connect(), listDocuments(), download(), upload() ...
-}
+### CI/CD
 
-// 2. Register in service_providers.dart
-final googleDriveProvider = Provider((_) => GoogleDriveProvider());
+`.github/workflows/build-apk.yml` tự build cả APK và AAB mỗi khi push, tự
+giải mã signing key từ GitHub Secrets nếu đã cấu hình (xem
+`KEYSTORE_SETUP.md`), fallback về debug key nếu chưa — không phá build của
+người khác chưa setup signing.
 
-// 3. Use in UI
-final provider = ref.read(googleDriveProvider);
-await provider.connect();
-final docs = await provider.listDocuments();
-final source = await provider.download(docs.first);
-await ref.read(documentNotifierProvider.notifier).open(source);
-```
+**Minification (R8) đang tắt cố ý** — không phải quên. R8 lỗi thường biểu
+hiện thành crash lúc chạy thật chứ không phải lỗi build, nên "build xanh"
+không đảm bảo an toàn. Cần test trên thiết bị thật trước khi bật
+`minifyEnabled`/`shrinkResources` trong `android/app/build.gradle`.
 
----
+## Quyền riêng tư
 
-## Build Verification (Final Pass)
-
-This environment does not have the Flutter/Dart SDK installed, so `flutter
-analyze` / `flutter test` could not be executed directly here. Instead, the
-final pass ran a set of static, script-based integrity checks across **every**
-file in `lib/` and `test/` to catch the classes of error a compiler would
-otherwise catch first:
-
-| Check | Result |
-|---|---|
-| All relative imports resolve to an existing file | ✅ 183/183 resolved |
-| No duplicate top-level class/enum names | ✅ none found |
-| Brace / paren balance in every file | ✅ balanced |
-| `firstOrNull`/`lastOrNull` usages have `package:collection` imported | ✅ all 4 sites fixed |
-| Singleton classes (private constructor) not default-constructed elsewhere | ✅ 1 found & fixed |
-| Every `ref.read(xProvider.notifier).method()` call matches a real method | ✅ all call sites valid |
-| `pubspec.yaml` is valid YAML with all used packages declared | ✅ added `collection: ^1.19.0` |
-
-**Two genuine, would-not-have-compiled bugs were found and fixed in this pass:**
-
-1. **29 broken relative import paths** across 9 files (`services/`,
-   `data/parsers/`, `presentation/screens/viewer/widgets/`) — these used the
-   wrong number of `../` segments and pointed at non-existent locations like
-   `lib/models/` instead of `lib/data/models/`. Root-caused to several files
-   being authored in isolation during earlier phases without re-checking
-   their actual directory depth.
-2. **`DocumentParserRegistry()` called with no public constructor** in
-   `phase5_test.dart` — the class is a singleton (`._()` private constructor
-   + static `.instance`); the test now correctly uses
-   `DocumentParserRegistry.instance`.
-
-**One real runtime crash bug (not a compile error) was also found and fixed:**
-
-3. **Flutter's `Table` widget crashes on any DOCX containing merged cells.**
-   `Table` requires every `TableRow` to have an identical cell count, but
-   OOXML legitimately emits *fewer* `<w:tc>` elements for a row containing a
-   `gridSpan` (column-merge) cell. `TableGridNormalizer`
-   (`lib/presentation/renderers/table_grid_normalizer.dart`, pure Dart, unit
-   tested) pads short rows with invisible filler cells before the widget
-   tree is built, so a real-world document with merged-cell tables no longer
-   throws an assertion error on open.
-
-**Two silent data-loss bugs in the DOCX serializer were also fixed:**
-
-4. Hyperlinks (`<w:hyperlink r:id="...">`) were written with **no
-   corresponding relationship entry** — Word would either strip the link or
-   flag the file as needing repair. Fixed with a `_SerializationContext`
-   that assigns and records real relationship IDs during the same traversal
-   that emits the body XML, for both standalone `HyperlinkBlock`s and inline
-   `TextRun.url` runs.
-5. Image relationships were written as `Target="media/image1.png"` while the
-   actual archived file was named `media/{rId}.png` — a guaranteed-broken
-   reference on reopen. Both now derive from one `_mediaFileName()` helper so
-   they can never drift apart.
-6. Equations were serialized as plain italic text, discarding the original
-   formula. The parser already retains `EquationBlock.rawOmml` verbatim, so
-   the serializer now re-emits it inside `<m:oMathPara>` — a save → reopen
-   cycle no longer destroys equations (editing equation *content* is still
-   Phase 6 work).
-7. Lists referenced `numId="1"`/`numId="2"` with **no `word/numbering.xml`
-   defining them** — Word silently drops bullet/number formatting on open.
-   A minimal valid `numbering.xml` (9 levels × bullet + decimal) is now
-   written and linked from both `[Content_Types].xml` and
-   `document.xml.rels`.
-
-None of the above were caught by manual code review across the many editing
-passes that built this project — they only surfaced once every file was
-checked mechanically, all together, in one pass. This is the actual reason a
-dedicated "final polish" pass earns its place in a real engineering process,
-not just a formality.
-
-```bash
-# Once a real Dart SDK is available, confirm with:
-flutter analyze
-flutter test
-flutter build apk --release
-```
-
----
+Không thu thập dữ liệu, không có analytics, không có backend. Toàn bộ lịch
+sử/yêu thích/thống kê chỉ lưu local trên máy, mất khi gỡ app. Chi tiết đầy
+đủ ở `docs/privacy-policy.html` (bật GitHub Pages để có URL public nộp cho
+Play Console/APKPure).
 
 ## License
-MIT — see LICENSE.
 
-Built with Flutter · Powered by flutter_math_fork · LaTeX via KaTeX
+MIT.
