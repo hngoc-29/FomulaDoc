@@ -1,11 +1,15 @@
-# Thiết lập chữ ký release (bắt buộc trước khi đăng lên Google Play)
+# Thiết lập chữ ký release (bắt buộc trước khi phát hành app)
 
-App hiện đang build release bằng **debug key** — Google Play sẽ từ chối file
-này. Làm theo các bước dưới đây một lần duy nhất để có key thật.
+App hiện đang build release bằng **debug key**. Dù phát hành qua CH Play,
+APKPure, hay cho tải trực tiếp — nơi nào cũng cần APK/AAB ký bằng key thật,
+không nơi nào chấp nhận debug key. Ngoài ra, nếu đổi key giữa các lần cập
+nhật, người dùng đã cài bản cũ sẽ gặp lỗi "signature mismatch" và phải gỡ
+cài lại — nên **key này chỉ tạo một lần và dùng mãi mãi** cho toàn bộ vòng
+đời của app.
 
 ⚠️ **Không bao giờ commit file `.jks` hoặc `key.properties` thật lên Git.**
 Mất file `.jks` hoặc quên mật khẩu = không thể cập nhật app đó nữa vĩnh viễn
-trên Play Store (phải tạo app mới, mất hết review/rating/số lượt tải).
+(phải tạo app mới, mất hết review/rating/số lượt tải cũ).
 **Hãy backup file `.jks` ở nơi an toàn (không phải trong repo) ngay sau khi tạo.**
 
 ## Bước 1 — Tạo keystore
@@ -48,11 +52,13 @@ commit nhầm.
 ## Bước 3 — Build thử
 
 ```bash
-flutter build appbundle --release
+flutter build apk --release         # file để up APKPure / cài trực tiếp
+flutter build appbundle --release   # file để up Google Play (nếu cần)
 ```
 
 Nếu thấy dòng cảnh báo "key.properties not found" biến mất và build ra file
-`build/app/outputs/bundle/release/app-release.aab` — vậy là đã ký đúng.
+`build/app/outputs/flutter-apk/app-release.apk` — vậy là đã ký đúng. Đây là
+file bạn upload lên APKPure.
 
 ## Bước 4 — Ký trên GitHub Actions (CI)
 
