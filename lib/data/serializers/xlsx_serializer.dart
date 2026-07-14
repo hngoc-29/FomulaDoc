@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
@@ -66,11 +67,17 @@ class XlsxSerializer {
         continue;
       }
 
+      // Read: utf8.decode (not String.fromCharCodes, which maps raw bytes
+      // 1:1 to UTF-16 code units instead of decoding UTF-8 — corrupts any
+      // Vietnamese/non-ASCII text already in the sheet).
       final patchedXml = _applyEditsToSheetXml(
-        String.fromCharCodes(file.content as List<int>),
+        utf8.decode(file.content as List<int>),
         sheetEdits,
       );
-      final bytes = Uint8List.fromList(patchedXml.codeUnits);
+      // Write: utf8.encode (not .codeUnits, which returns UTF-16 code units
+      // — writing those directly as "bytes" corrupts non-ASCII text on the
+      // way back out, even if the read side above is fixed).
+      final bytes = Uint8List.fromList(utf8.encode(patchedXml));
       newArchive.addFile(ArchiveFile(file.name, bytes.length, bytes));
     }
 

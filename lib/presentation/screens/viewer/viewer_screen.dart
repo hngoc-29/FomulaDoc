@@ -908,19 +908,26 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
             maxScale: AppConstants.maxZoom,
             constrained: false, // lets content exceed viewport when zoomed in
 
-            // Pan only during an actual 2-finger gesture (pinch).
-            // Previously this was `_panActive` (true whenever zoom > 1 even
-            // with ONE finger down), which made InteractiveViewer's
-            // PanGestureRecognizer compete with SelectionArea's long-press+
-            // drag recognizer in the same gesture arena — Flutter usually
-            // resolved that in favour of panning, so long-press-to-select
-            // felt unreliable or didn't trigger at all whenever the user had
-            // zoomed in even slightly.
-            // With panEnabled only true for genuine multi-touch, a single
-            // finger is never claimed by InteractiveViewer, so long-press
-            // selection and the ListView's own vertical scroll behave
-            // exactly like a normal (non-zoomable) text screen.
-            panEnabled: _multiTouch,
+            // Pan AND scale only during an actual 2-finger gesture (pinch).
+            // Previously only `panEnabled` was gated here — `scaleEnabled`
+            // defaulted to true unconditionally. InteractiveViewer uses a
+            // SINGLE ScaleGestureRecognizer for both single-finger pan and
+            // multi-finger pinch (that recognizer naturally handles 1-finger
+            // drags as "scale 1.0 + translation"), so leaving scaleEnabled
+            // always-on meant that recognizer stayed active and kept
+            // competing with SelectionArea's long-press recognizer for
+            // EVERY single-finger touch everywhere in the document — not
+            // just when zoomed — which is why text selection was unreliable
+            // across all file types, not only in one view.
+            // GestureDetector (which InteractiveViewer wraps internally)
+            // only instantiates a recognizer when at least one of its
+            // matching callbacks/flags is active — same mechanism already
+            // used above for the double-tap-reset gesture — so gating BOTH
+            // panEnabled and scaleEnabled together should fully remove the
+            // recognizer from the arena for single-touch, not just ignore
+            // its effect after the fact.
+            panEnabled:   _multiTouch,
+            scaleEnabled: _multiTouch,
 
             onInteractionUpdate: (_) {
               final s = _transformController.value.getMaxScaleOnAxis();

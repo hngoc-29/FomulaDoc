@@ -582,49 +582,60 @@ class _SpreadsheetWidget extends StatelessWidget {
             scrollDirection: Axis.horizontal,
             child: SizedBox(
               width: colW * block.colCount,
-              child: ListView.builder(
-                shrinkWrap:  true,
-                physics:     const NeverScrollableScrollPhysics(),
-                itemCount:   block.rows.length,
-                itemBuilder: (context, rowIdx) {
-                  final row       = block.rows[rowIdx];
-                  final isHeader  = rowIdx == 0;
-                  return Container(
-                    height: cellH,
-                    decoration: BoxDecoration(
-                      color: isHeader ? headerBg : (rowIdx.isOdd ? altBg : Colors.white),
-                      border: const Border(
-                          bottom: BorderSide(color: borderClr, width: 0.5)),
-                    ),
-                    child: Row(
-                      children: List.generate(block.colCount, (colIdx) {
-                        final cell = colIdx < row.length ? row[colIdx] : null;
-                        return Container(
-                          width: colW,
-                          height: cellH,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            border: Border(
-                                right: BorderSide(
-                                    color: borderClr, width: 0.5)),
-                          ),
-                          child: Text(
-                            cell ?? '',
-                            style: TextStyle(
-                              fontSize:   12,
-                              fontWeight: isHeader
-                                  ? FontWeight.w600 : FontWeight.normal,
-                              color: isHeader ? headerFg : Colors.black87,
-                            ),
-                            overflow:   TextOverflow.ellipsis,
-                            maxLines:   1,
-                          ),
-                        );
-                      }),
-                    ),
-                  );
-                },
+              // Plain Column instead of a nested ListView.builder.
+              // The previous ListView here had shrinkWrap:true +
+              // NeverScrollableScrollPhysics — it wasn't actually scrolling
+              // anything (vertical scroll was always handled by the outer
+              // document ListView), so it only added a second Viewport layer
+              // nested inside the horizontal SingleChildScrollView. Two
+              // stacked Viewport widgets like that interfered with
+              // SelectionArea's ability to find/select the Text widgets
+              // inside — long-press-to-select silently did nothing in the
+              // spreadsheet grid. A flat Column removes that extra layer;
+              // for a spreadsheet-sized row count, eager building is fine.
+              child: Column(
+                children: [
+                  for (int rowIdx = 0; rowIdx < block.rows.length; rowIdx++)
+                    Builder(builder: (context) {
+                      final row      = block.rows[rowIdx];
+                      final isHeader = rowIdx == 0;
+                      return Container(
+                        height: cellH,
+                        decoration: BoxDecoration(
+                          color: isHeader ? headerBg : (rowIdx.isOdd ? altBg : Colors.white),
+                          border: const Border(
+                              bottom: BorderSide(color: borderClr, width: 0.5)),
+                        ),
+                        child: Row(
+                          children: List.generate(block.colCount, (colIdx) {
+                            final cell = colIdx < row.length ? row[colIdx] : null;
+                            return Container(
+                              width: colW,
+                              height: cellH,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                border: Border(
+                                    right: BorderSide(
+                                        color: borderClr, width: 0.5)),
+                              ),
+                              child: Text(
+                                cell ?? '',
+                                style: TextStyle(
+                                  fontSize:   12,
+                                  fontWeight: isHeader
+                                      ? FontWeight.w600 : FontWeight.normal,
+                                  color: isHeader ? headerFg : Colors.black87,
+                                ),
+                                overflow:   TextOverflow.ellipsis,
+                                maxLines:   1,
+                              ),
+                            );
+                          }),
+                        ),
+                      );
+                    }),
+                ],
               ),
             ),
           ),

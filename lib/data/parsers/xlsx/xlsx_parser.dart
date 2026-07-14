@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
@@ -44,8 +45,14 @@ class XlsxParser extends DocumentParserInterface {
     final ssFile = archive.findFile('xl/sharedStrings.xml');
     if (ssFile != null) {
       try {
+        // XML files inside XLSX are always UTF-8 encoded. String.fromCharCodes
+        // would map each raw byte 0..255 directly to a UTF-16 code unit
+        // instead of decoding the UTF-8 sequence — that happens to work for
+        // plain ASCII text but corrupts anything with Vietnamese diacritics
+        // (or any non-ASCII text), producing mojibake like "TÃªn" instead of
+        // "Tên". utf8.decode() does the actual UTF-8 → Dart String decoding.
         final doc = XmlDocument.parse(
-            String.fromCharCodes(ssFile.content as List<int>));
+            utf8.decode(ssFile.content as List<int>));
         for (final si in doc.findAllElements('si')) {
           // concat all <t> text nodes (handles rich-text runs inside a cell)
           sharedStrings.add(
@@ -61,7 +68,7 @@ class XlsxParser extends DocumentParserInterface {
     if (wbFile != null) {
       try {
         final doc = XmlDocument.parse(
-            String.fromCharCodes(wbFile.content as List<int>));
+            utf8.decode(wbFile.content as List<int>));
         for (final sheet in doc.findAllElements('sheet')) {
           final name = sheet.getAttribute('name') ?? '';
           final rId  = sheet.getAttribute('r:id') ?? '';
@@ -76,7 +83,7 @@ class XlsxParser extends DocumentParserInterface {
     if (relsFile != null) {
       try {
         final doc = XmlDocument.parse(
-            String.fromCharCodes(relsFile.content as List<int>));
+            utf8.decode(relsFile.content as List<int>));
         for (final rel in doc.findAllElements('Relationship')) {
           final id     = rel.getAttribute('Id') ?? '';
           final target = rel.getAttribute('Target') ?? '';
@@ -175,7 +182,7 @@ class XlsxParser extends DocumentParserInterface {
 
   _ParsedSheet _parseWorksheet(
       List<int> bytes, List<String> sharedStrings) {
-    final doc  = XmlDocument.parse(String.fromCharCodes(bytes));
+    final doc  = XmlDocument.parse(utf8.decode(bytes));
     final rows = <List<String?>>[];
     final rowNumbers = <int>[];
     int positionalFallback = 0;
