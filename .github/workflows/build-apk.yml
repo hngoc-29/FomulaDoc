@@ -34,7 +34,7 @@ jobs:
         run: |
           echo "$KEYSTORE_BASE64" | base64 -d > android/app-release-key.jks
           cat > android/key.properties <<EOF
-          storeFile=app-release-key.jks
+          storeFile=../app-release-key.jks
           storePassword=${{ secrets.KEYSTORE_PASSWORD }}
           keyAlias=${{ secrets.KEY_ALIAS }}
           keyPassword=${{ secrets.KEY_PASSWORD }}
