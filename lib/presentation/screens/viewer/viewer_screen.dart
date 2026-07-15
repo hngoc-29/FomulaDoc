@@ -908,10 +908,25 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
             maxScale: AppConstants.maxZoom,
             constrained: false, // lets content exceed viewport when zoomed in
 
-            // Pan AND scale only during an actual 2-finger gesture (pinch).
-            // Previously only `panEnabled` was gated here — `scaleEnabled`
-            // defaulted to true unconditionally. InteractiveViewer uses a
-            // SINGLE ScaleGestureRecognizer for both single-finger pan and
+            // Scale (pinch) only during an actual 2-finger gesture — see the
+            // long comment above scaleEnabled below for why that one stays
+            // strictly multi-touch-gated.
+            //
+            // Pan is gated differently: multi-touch OR already zoomed in.
+            // At 1× zoom, single-finger drags are reserved for SelectionArea
+            // (this is what makes text selection work at all). But once the
+            // user has deliberately zoomed in, panning around with one
+            // finger is the expected behavior (same as Google Photos, Maps,
+            // etc.) — requiring 2 fingers just to look around a zoomed page
+            // was needlessly awkward. This does reopen the same recognizer
+            // that competes with SelectionArea, but only *while already
+            // zoomed*, which is an acceptable trade: at that point the user
+            // has shown pan/inspect intent over select intent. If this makes
+            // selection flaky specifically while zoomed, that's the
+            // trade-off to revisit.
+            panEnabled:   _multiTouch || _currentZoom > 1.005,
+            // Kept strictly multi-touch. InteractiveViewer uses a SINGLE
+            // ScaleGestureRecognizer for both single-finger pan and
             // multi-finger pinch (that recognizer naturally handles 1-finger
             // drags as "scale 1.0 + translation"), so leaving scaleEnabled
             // always-on meant that recognizer stayed active and kept
@@ -919,14 +934,6 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
             // EVERY single-finger touch everywhere in the document — not
             // just when zoomed — which is why text selection was unreliable
             // across all file types, not only in one view.
-            // GestureDetector (which InteractiveViewer wraps internally)
-            // only instantiates a recognizer when at least one of its
-            // matching callbacks/flags is active — same mechanism already
-            // used above for the double-tap-reset gesture — so gating BOTH
-            // panEnabled and scaleEnabled together should fully remove the
-            // recognizer from the arena for single-touch, not just ignore
-            // its effect after the fact.
-            panEnabled:   _multiTouch,
             scaleEnabled: _multiTouch,
 
             onInteractionUpdate: (_) {

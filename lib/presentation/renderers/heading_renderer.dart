@@ -53,8 +53,8 @@ class HeadingRenderer extends StatelessWidget {
       lineHeightMultiplier: lineSpacing,
     );
 
-    Widget heading = RichText(
-      text: TextSpan(style: baseStyle, children: spans),
+    Widget heading = Text.rich(
+      TextSpan(style: baseStyle, children: spans),
       textAlign: _mapAlignment(block.properties.alignment),
     );
 

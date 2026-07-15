@@ -330,8 +330,8 @@ class _CellContent extends StatelessWidget {
           if (block.isEmpty) return const SizedBox(height: 4);
           final spans = TextRunBuilder.buildSpans(block.runs, context,
               onLinkTap: onLinkTap);
-          return RichText(
-            text: TextSpan(
+          return Text.rich(
+            TextSpan(
               style: TextStyle(
                 fontWeight: isHeader ? FontWeight.w600 : FontWeight.normal,
                 fontSize:   14,
@@ -414,8 +414,8 @@ class _ListRow extends StatelessWidget {
           ),
           const SizedBox(width: 2),
           Expanded(
-            child: RichText(
-              text: TextSpan(
+            child: Text.rich(
+              TextSpan(
                 style:    TextStyle(fontSize: 15, height: 1.6, color: color),
                 children: spans,
               ),
@@ -445,7 +445,7 @@ class _HyperlinkWidget extends StatelessWidget {
     final spans = TextRunBuilder.buildSpans(block.runs, context, onLinkTap: onLinkTap);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
-      child:   RichText(text: TextSpan(children: spans)),
+      child:   Text.rich(TextSpan(children: spans)),
     );
   }
 }
@@ -550,19 +550,28 @@ class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
 /// card instead of dumping every row inline into the outer document
 /// ListView.
 ///
-/// v1.2 redesign — fixes three related complaints in one pass:
-///  - "still can't select": the old horizontal `SingleChildScrollView`
-///    competed with `SelectionArea` for single-finger drags the exact same
-///    way `InteractiveViewer` used to (see `_multiTouch` in ViewerScreen) —
-///    it just hadn't been fixed here yet. Horizontal panning now requires a
-///    deliberate 2-finger drag (or the scrollbar thumb), leaving every
-///    single-finger drag free for text selection.
-///  - "should have a vertical scrollbar": both axes now show a persistent,
-///    draggable `Scrollbar` instead of relying on invisible swipe-to-scroll.
-///  - "horizontal drag is laggy": the old build ate every row into one
-///    eager `Column` (a 500-row sheet meant 500 rows always alive, even
-///    off-screen). Rows are now virtualized via `ListView.builder` with a
-///    fixed `itemExtent`, so only the visible rows are ever built.
+/// v1.2 redesign, round 2 — history on the two trickiest points:
+///  - Selection: round 1 assumed the horizontal `SingleChildScrollView` was
+///    competing with `SelectionArea` for single-finger drags (the same way
+///    `InteractiveViewer` used to — see `_multiTouch` in ViewerScreen) and
+///    gated horizontal panning to a deliberate 2-finger drag to protect it.
+///    Selection still didn't work — the actual cause turned out to be that
+///    `_SpreadsheetRow` (below) already used a real `Text` widget, which
+///    *is* selection-aware, unlike the `RichText` used elsewhere in this
+///    file at the time. Once every renderer switched to `Text`/`Text.rich`,
+///    the 2-finger gate was solving a problem the gesture arena wasn't
+///    actually causing — removed, so horizontal panning is a normal
+///    single-finger swipe again. Trade-off: dragging sideways to select
+///    *across* cells may lose to the scroll gesture, same as any normal
+///    horizontal list.
+///  - Sizing: was capped at ~50% of screen height ("boxed-in panel" per
+///    feedback) — now ~75%, closer to full-screen.
+///
+/// Both still hold:
+///  - Persistent, draggable `Scrollbar` on both axes instead of invisible
+///    swipe-to-scroll.
+///  - Rows are virtualized via `ListView.builder` with a fixed `itemExtent`
+///    (a 500-row sheet no longer means 500 rows alive/built at once).
 class _SpreadsheetWidget extends StatefulWidget {
   const _SpreadsheetWidget({required this.block});
   final SpreadsheetBlock block;
@@ -580,39 +589,11 @@ class _SpreadsheetWidgetState extends State<_SpreadsheetWidget> {
   final _hController = ScrollController();
   final _vController = ScrollController();
 
-  // Same "count active fingers" trick already used in ViewerScreen's
-  // _multiTouch (see the comment there) — only a deliberate 2-finger drag
-  // pans the grid sideways, so every single-finger drag stays free for
-  // SelectionArea. Vertical scroll doesn't need this: a plain vertical
-  // drag and SelectionArea already coexist fine everywhere else in this
-  // app (a long-press-then-drag beats a quick vertical fling in the
-  // gesture arena) — it's specifically the horizontal axis that fights
-  // selection, because "select across these cells" and "pan the sheet
-  // sideways" are the same physical motion. The Scrollbar thumbs below
-  // still give a one-finger way to move around either axis, since
-  // dragging a thumb never touches the cell text underneath.
-  int  _activePointers = 0;
-  bool _multiTouch     = false;
-
   @override
   void dispose() {
     _hController.dispose();
     _vController.dispose();
     super.dispose();
-  }
-
-  void _pointerDown(PointerDownEvent _) {
-    _activePointers++;
-    if (_activePointers >= 2 && !_multiTouch) {
-      setState(() => _multiTouch = true);
-    }
-  }
-
-  void _pointerUp(PointerEvent _) {
-    if (_activePointers > 0) _activePointers--;
-    if (_activePointers < 2 && _multiTouch) {
-      setState(() => _multiTouch = false);
-    }
   }
 
   @override
@@ -621,12 +602,13 @@ class _SpreadsheetWidgetState extends State<_SpreadsheetWidget> {
     final rowCount  = block.rows.length;
     final double gridWidth = _rowNumW + _colW * block.colCount;
 
-    // Bounded height: a handful of rows scroll *inside* the card instead of
-    // every row being dumped into the outer document list — a 500-row
-    // sheet no longer means dragging the whole page a mile to reach row
-    // 500. Small sheets just fit exactly, no dead space either way.
-    final double maxBodyH = (MediaQuery.sizeOf(context).height * 0.5)
-        .clamp(200.0, 480.0)
+    // Bounded height: rows scroll *inside* the card instead of every row
+    // being dumped into the outer document list — a 500-row sheet no
+    // longer means dragging the whole page a mile to reach row 500. Sized
+    // to feel close to full-screen (~75% of viewport height) rather than a
+    // small boxed-in panel; small sheets just fit exactly, no dead space.
+    final double maxBodyH = (MediaQuery.sizeOf(context).height * 0.75)
+        .clamp(360.0, 720.0)
         .toDouble();
     final double naturalBodyH = rowCount * _cellH;
     final double bodyH = naturalBodyH < maxBodyH ? naturalBodyH : maxBodyH;
@@ -677,47 +659,48 @@ class _SpreadsheetWidgetState extends State<_SpreadsheetWidget> {
             ),
           ),
           // ── Grid ─────────────────────────────────────────────────────────
-          Listener(
-            behavior:        HitTestBehavior.translucent,
-            onPointerDown:   _pointerDown,
-            onPointerUp:     _pointerUp,
-            onPointerCancel: _pointerUp,
-            child: SizedBox(
-              height: bodyH,
-              child: Scrollbar(
+          // Horizontal pan is a normal single-finger swipe (previously
+          // gated to a 2-finger drag to protect SelectionArea — that gate
+          // is gone now that cells use a real Text widget under
+          // SelectionArea, which is what actually makes selection work;
+          // the gate was solving a problem the gesture arena wasn't
+          // actually causing). Trade-off: dragging sideways to select
+          // *across* cells may lose to the scroll gesture, same as any
+          // normal horizontal list — selecting within one cell, and
+          // vertical selection across rows, aren't affected.
+          SizedBox(
+            height: bodyH,
+            child: Scrollbar(
+              controller:      _hController,
+              thumbVisibility: true,
+              interactive:     true,
+              child: SingleChildScrollView(
                 controller:      _hController,
-                thumbVisibility: true,
-                interactive:     true,
-                child: SingleChildScrollView(
-                  controller:     _hController,
-                  scrollDirection: Axis.horizontal,
-                  physics: _multiTouch
-                      ? const BouncingScrollPhysics()
-                      : const NeverScrollableScrollPhysics(),
-                  child: SizedBox(
-                    width: gridWidth,
-                    child: Scrollbar(
-                      controller:      _vController,
-                      thumbVisibility: true,
-                      interactive:     true,
-                      child: ListView.builder(
-                        controller: _vController,
-                        physics:    const BouncingScrollPhysics(),
-                        itemExtent: _cellH,
-                        itemCount:  rowCount,
-                        itemBuilder: (context, rowIdx) => RepaintBoundary(
-                          child: _SpreadsheetRow(
-                            cells:     block.rows[rowIdx],
-                            colCount:  block.colCount,
-                            colW:      _colW,
-                            rowNumW:   _rowNumW,
-                            cellH:     _cellH,
-                            isHeader:  rowIdx == 0,
-                            isOdd:     rowIdx.isOdd,
-                            rowNumber: rowIdx < block.rowNumbers.length
-                                ? block.rowNumbers[rowIdx]
-                                : rowIdx + 1,
-                          ),
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                child: SizedBox(
+                  width: gridWidth,
+                  child: Scrollbar(
+                    controller:      _vController,
+                    thumbVisibility: true,
+                    interactive:     true,
+                    child: ListView.builder(
+                      controller: _vController,
+                      physics:    const BouncingScrollPhysics(),
+                      itemExtent: _cellH,
+                      itemCount:  rowCount,
+                      itemBuilder: (context, rowIdx) => RepaintBoundary(
+                        child: _SpreadsheetRow(
+                          cells:     block.rows[rowIdx],
+                          colCount:  block.colCount,
+                          colW:      _colW,
+                          rowNumW:   _rowNumW,
+                          cellH:     _cellH,
+                          isHeader:  rowIdx == 0,
+                          isOdd:     rowIdx.isOdd,
+                          rowNumber: rowIdx < block.rowNumbers.length
+                              ? block.rowNumbers[rowIdx]
+                              : rowIdx + 1,
                         ),
                       ),
                     ),

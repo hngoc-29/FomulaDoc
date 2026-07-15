@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/errors/app_exception.dart';
@@ -92,6 +94,17 @@ class DocumentNotifier extends StateNotifier<DocumentState> {
         );
       }
 
+      // Catches a Recent/History entry (or a stale cache key) pointing at
+      // a file that's since been deleted or moved. content:// URIs are
+      // resolved by the OS content provider rather than a plain path, so
+      // they're left to the parser's own error handling instead.
+      final path = source.path;
+      if (path != null &&
+          !path.startsWith('content://') &&
+          !File(path).existsSync()) {
+        throw FileNotFoundException(path);
+      }
+
       // Check cache using normalised key so content:// URIs hit the same
       // entry across sessions (the raw URI path segment changes each launch).
       final cache     = _ref.read(documentCacheProvider);
@@ -122,10 +135,24 @@ class DocumentNotifier extends StateNotifier<DocumentState> {
       }
     } on AppException catch (e) {
       AppLogger.error('Failed to open: ${e.message}', tag: 'DocumentNotifier', error: e);
-      state = state.copyWith(
-        status:       DocumentStatus.error,
-        errorMessage: e.message,
-      );
+      if (e is FileNotFoundException) {
+        // Clean up so this dead entry doesn't keep resurfacing in Recents
+        // or serving stale cached content.
+        _ref.read(documentCacheProvider).evict(_cacheKey(source));
+        if (source.path != null) {
+          await _ref.read(historyNotifierProvider.notifier).removeByPath(source.path!);
+        }
+        state = state.copyWith(
+          status:       DocumentStatus.error,
+          errorMessage:
+              'Không tìm thấy tệp — có thể đã bị xoá hoặc di chuyển. Đã xoá khỏi danh sách gần đây.',
+        );
+      } else {
+        state = state.copyWith(
+          status:       DocumentStatus.error,
+          errorMessage: e.message,
+        );
+      }
     } catch (e) {
       AppLogger.error('Unexpected error', tag: 'DocumentNotifier', error: e);
       state = state.copyWith(

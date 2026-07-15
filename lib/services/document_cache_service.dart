@@ -25,12 +25,14 @@ class _CacheEntry {
 /// The cache is automatically invalidated when the source file's modification
 /// timestamp changes.
 ///
-/// Capacity: [maxEntries] documents (default 5).
+/// Capacity: [maxEntries] documents (default 20 — matches HistoryService's
+/// own "recent files" limit, so most of what shows in Recents can be
+/// reopened instantly without a re-parse).
 /// On eviction the least-recently-used entry is removed.
 ///
 /// This is a singleton-style service (one instance per app lifetime).
 class DocumentCacheService {
-  DocumentCacheService({this.maxEntries = 5});
+  DocumentCacheService({this.maxEntries = 20});
 
   final int maxEntries;
 

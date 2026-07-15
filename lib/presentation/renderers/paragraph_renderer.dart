@@ -34,8 +34,8 @@ class ParagraphRenderer extends StatelessWidget {
       lineHeightMultiplier: lineSpacing,
     );
 
-    Widget content = RichText(
-      text:      TextSpan(children: spans),
+    Widget content = Text.rich(
+      TextSpan(children: spans),
       textAlign: _mapAlign(block.properties.alignment),
     );
 

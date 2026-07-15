@@ -1,3 +1,4 @@
+import 'package:collection/collection.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/utils/logger.dart';
@@ -105,6 +106,16 @@ class HistoryNotifier extends StateNotifier<HistoryState> {
     } catch (e) {
       AppLogger.warning('Failed to remove record: $e', tag: 'HistoryNotifier');
     }
+  }
+
+  /// Removes whichever record matches [path], if any. Used when a file on
+  /// disk turns out to be gone (deleted/moved) — the caller only has the
+  /// path at that point, not the record's generated id.
+  Future<void> removeByPath(String path) async {
+    final match = [...state.recentFiles, ...state.favorites]
+        .where((r) => r.path == path)
+        .firstOrNull;
+    if (match != null) await removeRecord(match.id);
   }
 
   Future<void> clearAll() async {
