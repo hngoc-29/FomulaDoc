@@ -499,14 +499,14 @@ class _PdfDocumentWidget extends StatefulWidget {
 }
 
 class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
-  late final PdfController _ctrl;
+  late final PdfControllerPinch _ctrl;
 
   @override
   void initState() {
     super.initState();
-    _ctrl = PdfController(
-      document:        PdfDocument.openData(widget.block.bytes),
-      initialPage:     widget.initialPage,
+    _ctrl = PdfControllerPinch(
+      document:    PdfDocument.openData(widget.block.bytes),
+      initialPage: widget.initialPage,
     );
   }
 
@@ -520,13 +520,19 @@ class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
   Widget build(BuildContext context) {
     return SizedBox(
       height: MediaQuery.of(context).size.height * 0.85,
-      child: PdfView(
+      // PdfViewPinch (instead of the plain PdfView used before) gives each
+      // page its own independent pinch-to-zoom-and-pan, built on
+      // photo_view — a pinch now scales whichever page you're on, not the
+      // whole multi-page scroll as one flat unit. This is also why PDF is
+      // excluded from the shared document-level InteractiveViewer in
+      // ViewerScreen (see the isPdf comment there): the two would
+      // otherwise compete for the same pinch gesture.
+      child: PdfViewPinch(
         controller: _ctrl,
         scrollDirection: Axis.vertical,
-        pageSnapping: false,
         onPageChanged: widget.onPageChanged,
         backgroundDecoration: const BoxDecoration(color: Color(0xFFF0F0F0)),
-        builders: PdfViewBuilders<DefaultBuilderOptions>(
+        builders: PdfViewPinchBuilders<DefaultBuilderOptions>(
           options: const DefaultBuilderOptions(),
           documentLoaderBuilder: (_) =>
               const Center(child: CircularProgressIndicator()),

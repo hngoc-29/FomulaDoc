@@ -54,6 +54,9 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
   final _sessionStopwatch    = Stopwatch();
 
   double  _currentZoom    = AppConstants.defaultZoom;
+  // Deliberately separate from _currentZoom — see the comment above
+  // onInteractionUpdate for why.
+  bool    _isZoomed        = false;
   bool    _showWarnings   = false;
   String? _currentFileId;
   Timer?  _scrollSaveTimer;
@@ -242,7 +245,10 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
 
   void _applyZoom(double zoom) {
     final clamped = zoom.clamp(AppConstants.minZoom, AppConstants.maxZoom);
-    setState(() => _currentZoom = clamped);
+    setState(() {
+      _currentZoom = clamped;
+      _isZoomed    = clamped > 1.005;
+    });
     _transformController.value = Matrix4.diagonal3Values(clamped, clamped, 1);
   }
 
@@ -857,6 +863,17 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
     ReadingThemeMode readingTheme,
     Color paperColor,
   ) {
+    // PDF pages render as flat images with no text layer (see
+    // _PdfDocumentWidget) — nothing here is selectable, and PdfViewPinch
+    // (used inside DocumentRendererWidget for pdf blocks) handles its own
+    // proper per-page pinch-zoom-and-pan via photo_view. The shared
+    // InteractiveViewer/AbsorbPointer below is for DOCX/XLSX zoom+select;
+    // for PDFs it's made inert (never pans/scales/absorbs) further down so
+    // it just gets out of the way instead of fighting PdfViewPinch for the
+    // same touches — that fight is what caused pinching a PDF to scale the
+    // whole multi-page canvas as one flat unit instead of one page.
+    final isPdf = (state.currentFileName ?? '').toLowerCase().endsWith('.pdf');
+
     // ── Listener tracks active pointer count ────────────────────────────────
     // We use raw pointer events (not GestureDetector) so we can reliably
     // count fingers without fighting the gesture arena.
@@ -899,9 +916,20 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
           // normal 1× zoom (callback = null) this adds zero competition
           // against SelectionArea's own double-tap-to-select-word — the
           // recognizer simply doesn't exist until the user has zoomed in.
+          //
+          // Gated on _isZoomed, NOT _currentZoom. _currentZoom updates on
+          // every onInteractionUpdate frame *during* an active pinch: if
+          // onDoubleTap flipped null→non-null mid-gesture, GestureDetector
+          // has to instantiate a brand new DoubleTapGestureRecognizer and
+          // insert it into an arena that's already mid-resolution for the
+          // pinch — which was derailing the in-progress scale gesture
+          // entirely (pinching in would stop increasing the zoom % partway
+          // through). _isZoomed only changes in onInteractionEnd/_applyZoom,
+          // never while a gesture is actively updating, so this recognizer's
+          // existence is stable for the full duration of any single gesture.
           GestureDetector(
             behavior: HitTestBehavior.translucent,
-            onDoubleTap: _currentZoom > 1.005 ? () => _applyZoom(1.0) : null,
+            onDoubleTap: (!isPdf && _isZoomed) ? () => _applyZoom(1.0) : null,
             child: InteractiveViewer(
             transformationController: _transformController,
             minScale: AppConstants.minZoom,
@@ -912,20 +940,26 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
             // long comment above scaleEnabled below for why that one stays
             // strictly multi-touch-gated.
             //
-            // Pan is gated differently: multi-touch OR already zoomed in.
-            // At 1× zoom, single-finger drags are reserved for SelectionArea
-            // (this is what makes text selection work at all). But once the
-            // user has deliberately zoomed in, panning around with one
-            // finger is the expected behavior (same as Google Photos, Maps,
-            // etc.) — requiring 2 fingers just to look around a zoomed page
-            // was needlessly awkward. This does reopen the same recognizer
-            // that competes with SelectionArea, but only *while already
-            // zoomed*, which is an acceptable trade: at that point the user
-            // has shown pan/inspect intent over select intent. If this makes
+            // Pan is gated differently: multi-touch OR already zoomed in
+            // (_isZoomed — see the onDoubleTap comment above for why this
+            // isn't _currentZoom directly). At 1× zoom, single-finger drags
+            // are reserved for SelectionArea (this is what makes text
+            // selection work at all). But once the user has deliberately
+            // zoomed in, panning around with one finger is the expected
+            // behavior (same as Google Photos, Maps, etc.) — requiring 2
+            // fingers just to look around a zoomed page was needlessly
+            // awkward. This does reopen the same recognizer that competes
+            // with SelectionArea, but only *while already zoomed*, which is
+            // an acceptable trade: at that point the user has shown
+            // pan/inspect intent over select intent. If this makes
             // selection flaky specifically while zoomed, that's the
             // trade-off to revisit.
-            panEnabled:   _multiTouch || _currentZoom > 1.005,
-            // Kept strictly multi-touch. InteractiveViewer uses a SINGLE
+            //
+            // Both flags are forced off entirely for PDF — see the isPdf
+            // comment at the top of this method.
+            panEnabled:   !isPdf && (_multiTouch || _isZoomed),
+            // Kept strictly multi-touch (and off entirely for PDF). Beyond
+            // the reasons above: InteractiveViewer uses a SINGLE
             // ScaleGestureRecognizer for both single-finger pan and
             // multi-finger pinch (that recognizer naturally handles 1-finger
             // drags as "scale 1.0 + translation"), so leaving scaleEnabled
@@ -934,21 +968,30 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
             // EVERY single-finger touch everywhere in the document — not
             // just when zoomed — which is why text selection was unreliable
             // across all file types, not only in one view.
-            scaleEnabled: _multiTouch,
+            scaleEnabled: !isPdf && _multiTouch,
 
             onInteractionUpdate: (_) {
+              // Keep updating the live zoom-% readout every frame — but
+              // deliberately leave _isZoomed untouched here. See the
+              // onDoubleTap comment above for why.
               final s = _transformController.value.getMaxScaleOnAxis();
               if ((s - _currentZoom).abs() > 0.01) {
                 setState(() => _currentZoom = s);
               }
             },
             onInteractionEnd: (_) {
-              // If the user fully pinched back to 1×, snap the matrix to
-              // identity so the content re-centres and scrolling resumes.
+              // Gesture has fully ended — safe to settle _isZoomed now.
               final s = _transformController.value.getMaxScaleOnAxis();
               if (s <= 1.005) {
                 _transformController.value = Matrix4.identity();
-                if (_currentZoom != 1.0) setState(() => _currentZoom = 1.0);
+                if (_currentZoom != 1.0 || _isZoomed) {
+                  setState(() {
+                    _currentZoom = 1.0;
+                    _isZoomed    = false;
+                  });
+                }
+              } else if (!_isZoomed) {
+                setState(() => _isZoomed = true);
               }
             },
 
@@ -959,10 +1002,13 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
               height: viewH,
               child: AbsorbPointer(
                 // Only block child touch events during a 2-finger gesture
-                // (pinch). Absorbing based on zoom level too would also
+                // (pinch) — and never for PDF, where there's no gesture to
+                // protect here (see the isPdf comment above) and blocking
+                // would just stop PdfViewPinch from seeing the pinch itself.
+                // Absorbing based on zoom level too would also
                 // block SelectionArea's long-press, preventing text copy
                 // entirely whenever the document is zoomed in.
-                absorbing: _multiTouch,
+                absorbing: !isPdf && _multiTouch,
                 child: Center(
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(
