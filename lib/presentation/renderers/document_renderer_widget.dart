@@ -546,100 +546,267 @@ class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
 // SPREADSHEET (XLSX)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _SpreadsheetWidget extends StatelessWidget {
+/// Renders one XLSX sheet as its own bounded, independently-scrollable grid
+/// card instead of dumping every row inline into the outer document
+/// ListView.
+///
+/// v1.2 redesign — fixes three related complaints in one pass:
+///  - "still can't select": the old horizontal `SingleChildScrollView`
+///    competed with `SelectionArea` for single-finger drags the exact same
+///    way `InteractiveViewer` used to (see `_multiTouch` in ViewerScreen) —
+///    it just hadn't been fixed here yet. Horizontal panning now requires a
+///    deliberate 2-finger drag (or the scrollbar thumb), leaving every
+///    single-finger drag free for text selection.
+///  - "should have a vertical scrollbar": both axes now show a persistent,
+///    draggable `Scrollbar` instead of relying on invisible swipe-to-scroll.
+///  - "horizontal drag is laggy": the old build ate every row into one
+///    eager `Column` (a 500-row sheet meant 500 rows always alive, even
+///    off-screen). Rows are now virtualized via `ListView.builder` with a
+///    fixed `itemExtent`, so only the visible rows are ever built.
+class _SpreadsheetWidget extends StatefulWidget {
   const _SpreadsheetWidget({required this.block});
   final SpreadsheetBlock block;
 
   @override
-  Widget build(BuildContext context) {
-    const headerBg  = Color(0xFF1565C0);
-    const headerFg  = Colors.white;
-    const altBg     = Color(0xFFF5F8FF);
-    const borderClr = Color(0xFFCFD8DC);
-    const cellH     = 36.0;
-    // Fixed column width; user can scroll horizontally for wide sheets
-    const colW      = 120.0;
+  State<_SpreadsheetWidget> createState() => _SpreadsheetWidgetState();
+}
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // ── Sheet tab ──────────────────────────────────────────────────────
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: headerBg,
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(6), topRight: Radius.circular(6)),
+class _SpreadsheetWidgetState extends State<_SpreadsheetWidget> {
+  static const double _cellH   = 36.0;
+  // Fixed column width; user pans horizontally for wide sheets.
+  static const double _colW    = 120.0;
+  static const double _rowNumW = 40.0;
+
+  final _hController = ScrollController();
+  final _vController = ScrollController();
+
+  // Same "count active fingers" trick already used in ViewerScreen's
+  // _multiTouch (see the comment there) — only a deliberate 2-finger drag
+  // pans the grid sideways, so every single-finger drag stays free for
+  // SelectionArea. Vertical scroll doesn't need this: a plain vertical
+  // drag and SelectionArea already coexist fine everywhere else in this
+  // app (a long-press-then-drag beats a quick vertical fling in the
+  // gesture arena) — it's specifically the horizontal axis that fights
+  // selection, because "select across these cells" and "pan the sheet
+  // sideways" are the same physical motion. The Scrollbar thumbs below
+  // still give a one-finger way to move around either axis, since
+  // dragging a thumb never touches the cell text underneath.
+  int  _activePointers = 0;
+  bool _multiTouch     = false;
+
+  @override
+  void dispose() {
+    _hController.dispose();
+    _vController.dispose();
+    super.dispose();
+  }
+
+  void _pointerDown(PointerDownEvent _) {
+    _activePointers++;
+    if (_activePointers >= 2 && !_multiTouch) {
+      setState(() => _multiTouch = true);
+    }
+  }
+
+  void _pointerUp(PointerEvent _) {
+    if (_activePointers > 0) _activePointers--;
+    if (_activePointers < 2 && _multiTouch) {
+      setState(() => _multiTouch = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final block     = widget.block;
+    final rowCount  = block.rows.length;
+    final double gridWidth = _rowNumW + _colW * block.colCount;
+
+    // Bounded height: a handful of rows scroll *inside* the card instead of
+    // every row being dumped into the outer document list — a 500-row
+    // sheet no longer means dragging the whole page a mile to reach row
+    // 500. Small sheets just fit exactly, no dead space either way.
+    final double maxBodyH = (MediaQuery.sizeOf(context).height * 0.5)
+        .clamp(200.0, 480.0)
+        .toDouble();
+    final double naturalBodyH = rowCount * _cellH;
+    final double bodyH = naturalBodyH < maxBodyH ? naturalBodyH : maxBodyH;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        borderRadius: ThemeConstants.cardRadius,
+        border: Border.all(color: const Color(0xFFCFD8DC)),
+        boxShadow: [
+          BoxShadow(
+            color:      Colors.black.withValues(alpha: 0.06),
+            blurRadius: 8,
+            offset:     const Offset(0, 2),
           ),
-          child: Text(block.sheetName,
-              style: const TextStyle(
-                  color: headerFg, fontWeight: FontWeight.w600, fontSize: 13)),
-        ),
-        // ── Grid ──────────────────────────────────────────────────────────
-        Padding(
-          padding: const EdgeInsets.only(bottom: 16),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
+        ],
+      ),
+      child: Column(
+        mainAxisSize:       MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Sheet tab ──────────────────────────────────────────────────
+          Container(
+            width:   double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            color:   ThemeConstants.primaryBlue,
+            child: Row(
+              children: [
+                const Icon(Icons.table_chart_outlined,
+                    size: 15, color: Colors.white),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    block.sheetName,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13),
+                  ),
+                ),
+                Text('$rowCount dòng',
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.75),
+                        fontSize: 11)),
+              ],
+            ),
+          ),
+          // ── Grid ─────────────────────────────────────────────────────────
+          Listener(
+            behavior:        HitTestBehavior.translucent,
+            onPointerDown:   _pointerDown,
+            onPointerUp:     _pointerUp,
+            onPointerCancel: _pointerUp,
             child: SizedBox(
-              width: colW * block.colCount,
-              // Plain Column instead of a nested ListView.builder.
-              // The previous ListView here had shrinkWrap:true +
-              // NeverScrollableScrollPhysics — it wasn't actually scrolling
-              // anything (vertical scroll was always handled by the outer
-              // document ListView), so it only added a second Viewport layer
-              // nested inside the horizontal SingleChildScrollView. Two
-              // stacked Viewport widgets like that interfered with
-              // SelectionArea's ability to find/select the Text widgets
-              // inside — long-press-to-select silently did nothing in the
-              // spreadsheet grid. A flat Column removes that extra layer;
-              // for a spreadsheet-sized row count, eager building is fine.
-              child: Column(
-                children: [
-                  for (int rowIdx = 0; rowIdx < block.rows.length; rowIdx++)
-                    Builder(builder: (context) {
-                      final row      = block.rows[rowIdx];
-                      final isHeader = rowIdx == 0;
-                      return Container(
-                        height: cellH,
-                        decoration: BoxDecoration(
-                          color: isHeader ? headerBg : (rowIdx.isOdd ? altBg : Colors.white),
-                          border: const Border(
-                              bottom: BorderSide(color: borderClr, width: 0.5)),
+              height: bodyH,
+              child: Scrollbar(
+                controller:      _hController,
+                thumbVisibility: true,
+                interactive:     true,
+                child: SingleChildScrollView(
+                  controller:     _hController,
+                  scrollDirection: Axis.horizontal,
+                  physics: _multiTouch
+                      ? const BouncingScrollPhysics()
+                      : const NeverScrollableScrollPhysics(),
+                  child: SizedBox(
+                    width: gridWidth,
+                    child: Scrollbar(
+                      controller:      _vController,
+                      thumbVisibility: true,
+                      interactive:     true,
+                      child: ListView.builder(
+                        controller: _vController,
+                        physics:    const BouncingScrollPhysics(),
+                        itemExtent: _cellH,
+                        itemCount:  rowCount,
+                        itemBuilder: (context, rowIdx) => RepaintBoundary(
+                          child: _SpreadsheetRow(
+                            cells:     block.rows[rowIdx],
+                            colCount:  block.colCount,
+                            colW:      _colW,
+                            rowNumW:   _rowNumW,
+                            cellH:     _cellH,
+                            isHeader:  rowIdx == 0,
+                            isOdd:     rowIdx.isOdd,
+                            rowNumber: rowIdx < block.rowNumbers.length
+                                ? block.rowNumbers[rowIdx]
+                                : rowIdx + 1,
+                          ),
                         ),
-                        child: Row(
-                          children: List.generate(block.colCount, (colIdx) {
-                            final cell = colIdx < row.length ? row[colIdx] : null;
-                            return Container(
-                              width: colW,
-                              height: cellH,
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                border: Border(
-                                    right: BorderSide(
-                                        color: borderClr, width: 0.5)),
-                              ),
-                              child: Text(
-                                cell ?? '',
-                                style: TextStyle(
-                                  fontSize:   12,
-                                  fontWeight: isHeader
-                                      ? FontWeight.w600 : FontWeight.normal,
-                                  color: isHeader ? headerFg : Colors.black87,
-                                ),
-                                overflow:   TextOverflow.ellipsis,
-                                maxLines:   1,
-                              ),
-                            );
-                          }),
-                        ),
-                      );
-                    }),
-                ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SpreadsheetRow extends StatelessWidget {
+  const _SpreadsheetRow({
+    required this.cells,
+    required this.colCount,
+    required this.colW,
+    required this.rowNumW,
+    required this.cellH,
+    required this.isHeader,
+    required this.isOdd,
+    required this.rowNumber,
+  });
+
+  final List<String?> cells;
+  final int    colCount;
+  final double colW;
+  final double rowNumW;
+  final double cellH;
+  final bool   isHeader;
+  final bool   isOdd;
+  final int    rowNumber;
+
+  static const _headerBg  = ThemeConstants.primaryBlue;
+  static const _altBg     = Color(0xFFF5F8FF);
+  static const _gutterBg  = Color(0xFFEEF2F6);
+  static const _borderClr = Color(0xFFCFD8DC);
+  static const _rowBorder = Border(
+    right:  BorderSide(color: _borderClr, width: 0.5),
+    bottom: BorderSide(color: _borderClr, width: 0.5),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        // Row-number gutter — helps keep track of position now that the
+        // sheet scrolls inside its own bounded box instead of the whole
+        // page.
+        Container(
+          width:     rowNumW,
+          height:    cellH,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color:  isHeader ? _headerBg : _gutterBg,
+            border: _rowBorder,
+          ),
+          child: Text(
+            '$rowNumber',
+            style: TextStyle(
+              fontSize:   11,
+              fontWeight: FontWeight.w600,
+              color:      isHeader ? Colors.white70 : Colors.black54,
+            ),
+          ),
         ),
+        for (int colIdx = 0; colIdx < colCount; colIdx++)
+          Container(
+            width:     colW,
+            height:    cellH,
+            padding:   const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            alignment: Alignment.centerLeft,
+            decoration: BoxDecoration(
+              color:  isHeader ? _headerBg : (isOdd ? _altBg : Colors.white),
+              border: _rowBorder,
+            ),
+            child: Text(
+              colIdx < cells.length ? (cells[colIdx] ?? '') : '',
+              style: TextStyle(
+                fontSize:   12,
+                fontWeight: isHeader ? FontWeight.w600 : FontWeight.normal,
+                color:      isHeader ? Colors.white : Colors.black87,
+              ),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          ),
       ],
     );
   }

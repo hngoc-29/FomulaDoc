@@ -6,7 +6,11 @@ class AppConstants {
 
   // ── App Info ──────────────────────────────────────────────────────────────
   static const String appName = 'FormulaDoc';
-  static const String appVersion = '1.0.0';
+  // Keep in sync with the `version:` line in pubspec.yaml on every bump —
+  // this is a separate hardcoded copy (no package_info_plus dependency
+  // yet) so it doesn't update itself automatically. It had drifted to
+  // 1.0.0 while the shipped app was already 1.1.0.
+  static const String appVersion = '1.2.0';
 
   // ── Supported Formats ─────────────────────────────────────────────────────
   /// File extensions the app can open (Phase 1: DOCX only).

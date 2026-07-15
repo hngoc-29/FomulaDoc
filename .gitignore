@@ -2,6 +2,7 @@
 android/key.properties
 *.jks
 *.keystore
+keystore_base64.txt
 
 # ── Flutter/Dart ─────────────────────────────────────────────────────────────
 .dart_tool/
