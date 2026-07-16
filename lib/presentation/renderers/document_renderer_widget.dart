@@ -106,7 +106,7 @@ class DocumentRendererWidget extends ConsumerWidget {
             block:     block,
             onLinkTap: onLinkTap,
           ),
-        PdfDocumentBlock()  => PdfDocumentView(
+        PdfDocumentBlock()  => _PdfDocumentWidget(
             block:         block,
             initialPage:   pdfInitialPage,
             onPageChanged: onPdfPageChanged,
@@ -168,7 +168,14 @@ class _ImageWidget extends StatelessWidget {
 
     if (bytes == null) return _placeholder(context);
 
-    final maxW = AppConstants.documentMaxWidth -
+    // Was based on the fixed documentMaxWidth constant, back when the
+    // reading column was always capped at that width. Now that content
+    // fills the full available width (see the comment in
+    // ViewerScreen._buildDocumentView), an embedded image should size
+    // relative to the actual screen width instead, so it still fills the
+    // reading column properly rather than being capped to the old 780px
+    // regardless of how wide the screen actually is.
+    final maxW = MediaQuery.sizeOf(context).width -
                  AppConstants.documentHorizontalPadding * 2;
     final w = (block.widthPx ?? maxW).clamp(0.0, maxW);
     final h = block.heightPx;
@@ -246,11 +253,20 @@ class _TableWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     if (block.rows.isEmpty) return const SizedBox.shrink();
 
-    // Since the document area is always forced to light theme (white paper),
-    // we use fixed light-mode colors here.
-    const borderColor = Color(0xFFCCCCCC);
-    const headerBg    = Color(0xFFE3F2FD);
-    const altBg       = Color(0xFFF9F9F9);
+    // Derived from the *current* reading theme's own onSurface color rather
+    // than fixed light-mode values. This used to assume the document area
+    // was always light-themed ("white paper"), which stopped being true
+    // once the 4 reading modes (Sáng/Sepia/Tối/Tương phản cao) shipped —
+    // the old fixed light-blue header and near-white alt-rows were low
+    // contrast to the point of being barely legible against a dark paper
+    // background. Tinting onSurface at low alpha over the current surface
+    // keeps header/alt-rows visible AND correctly readable in every mode,
+    // since the tint is derived from the same color already chosen to
+    // contrast well with that mode's paper.
+    final scheme      = Theme.of(context).colorScheme;
+    final borderColor = scheme.onSurface.withValues(alpha: 0.25);
+    final headerBg    = scheme.onSurface.withValues(alpha: 0.12);
+    final altBg       = scheme.onSurface.withValues(alpha: 0.05);
 
     final normalizedRows = TableGridNormalizer.isAlreadyUniform(block.rows)
         ? block.rows
@@ -489,49 +505,17 @@ class _ErrorBlock extends StatelessWidget {
 // PDF DOCUMENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Public PDF renderer widget (extracted from the old private
-/// `_PdfDocumentWidget`).
-///
-/// Renders a [PdfDocumentBlock] as a full-viewport [PdfViewPinch] that
-/// owns its own scrolling and pinch-to-zoom-and-pan (built on photo_view).
-///
-/// Key differences from the old `_PdfDocumentWidget`:
-///  - No more `SizedBox(height: 0.85 * screenHeight)` constraint. The
-///    widget now expands to fill its parent's bounded constraints via
-///    [LayoutBuilder] + [SizedBox]. Constraining the PDF to ~85% of the
-///    screen was the root cause of "PDF loads incompletely": pdfx's
-///    lazy renderer only rasterizes pages whose render rect intersects
-///    the visible viewport, and a too-small viewport combined with the
-///    outer ListView's nested scrolling meant many pages were never
-///    asked to render. Giving it the full available height (and
-///    removing the outer ListView for PDFs in ViewerScreen) lets pdfx
-///    see a real viewport and lazy-render pages correctly as the user
-///    scrolls.
-///  - [onControllerCreated] exposes the [PdfControllerPinch] so the
-///    host screen can drive programmatic zoom (AppBar zoom buttons)
-///    via [PdfControllerPinch.setZoom] — previously the AppBar zoom
-///    buttons manipulated the InteractiveViewer's TransformationController
-///    which was a no-op for PDF because scaleEnabled was forced off.
-class PdfDocumentView extends StatefulWidget {
-  const PdfDocumentView({
-    super.key,
-    required this.block,
-    this.initialPage = 1,
-    this.onPageChanged,
-    this.onControllerCreated,
-  });
-
+class _PdfDocumentWidget extends StatefulWidget {
+  const _PdfDocumentWidget({required this.block, this.initialPage = 1, this.onPageChanged});
   final PdfDocumentBlock block;
   final int initialPage;
   final void Function(int page)? onPageChanged;
-  final void Function(PdfControllerPinch controller)? onControllerCreated;
-
   @override
-  State<PdfDocumentView> createState() => _PdfDocumentViewState();
+  State<_PdfDocumentWidget> createState() => _PdfDocumentWidgetState();
 }
 
-class _PdfDocumentViewState extends State<PdfDocumentView> {
-  PdfControllerPinch? _ctrl;
+class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
+  late final PdfControllerPinch _ctrl;
 
   @override
   void initState() {
@@ -540,92 +524,46 @@ class _PdfDocumentViewState extends State<PdfDocumentView> {
       document:    PdfDocument.openData(widget.block.bytes),
       initialPage: widget.initialPage,
     );
-    // Fire on the next frame so the host can store the controller
-    // before any potential pinch gesture arrives.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _ctrl != null) {
-        widget.onControllerCreated?.call(_ctrl!);
-      }
-    });
-  }
-
-  @override
-  void didUpdateWidget(covariant PdfDocumentView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // If the host passes a different PDF block (different identityHash of
-    // the bytes), the old controller is now stale and must be rebuilt
-    // against the new document. Without this, navigating between two PDFs
-    // would reuse the first PDF's controller — undefined behavior in pdfx
-    // and a real cause of "loads incompletely" on the second file.
-    if (!identical(oldWidget.block.bytes, widget.block.bytes)) {
-      final oldCtrl = _ctrl;
-      _ctrl = PdfControllerPinch(
-        document:    PdfDocument.openData(widget.block.bytes),
-        initialPage: widget.initialPage,
-      );
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _ctrl != null) {
-          widget.onControllerCreated?.call(_ctrl!);
-        }
-      });
-      oldCtrl?.dispose();
-    }
   }
 
   @override
   void dispose() {
-    _ctrl?.dispose();
-    _ctrl = null;
+    _ctrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // LayoutBuilder gives us the actual viewport the parent (the Expanded
-    // Stack in ViewerScreen) has reserved for the PDF — use its full
-    // height instead of guessing 0.85 * screenHeight. A too-small height
-    // was why pdfx skipped rendering pages: its renderer only rasterizes
-    // pages whose rect intersects the visible viewport, and an
-    // artificially small viewport meant many pages were never asked to
-    // render.
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final h = constraints.maxHeight.isFinite
-            ? constraints.maxHeight
-            : MediaQuery.of(context).size.height;
-        final w = constraints.maxWidth.isFinite
-            ? constraints.maxWidth
-            : MediaQuery.of(context).size.width;
-
-        return SizedBox(
-          width:  w,
-          height: h,
-          // PdfViewPinch gives each page its own independent
-          // pinch-to-zoom-and-pan, built on photo_view — a pinch now
-          // scales whichever page you're on, not the whole multi-page
-          // scroll as one flat unit. This is also why PDF is excluded
-          // from the shared document-level InteractiveViewer in
-          // ViewerScreen (see the isPdf comment there): the two would
-          // otherwise compete for the same pinch gesture.
-          child: PdfViewPinch(
-            controller: _ctrl!,
-            scrollDirection: Axis.vertical,
-            onPageChanged: widget.onPageChanged,
-            backgroundDecoration: const BoxDecoration(color: Color(0xFFF0F0F0)),
-            builders: PdfViewPinchBuilders<DefaultBuilderOptions>(
-              options: const DefaultBuilderOptions(),
-              documentLoaderBuilder: (_) =>
-                  const Center(child: CircularProgressIndicator()),
-              pageLoaderBuilder: (_) =>
-                  const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-              errorBuilder: (_, e) => Center(
-                child: Text('Không thể render trang: $e',
-                    style: const TextStyle(color: Colors.red)),
-              ),
-            ),
+    return SizedBox(
+      // ~92% of viewport — consistent with the XLSX grid card getting the
+      // same full-screen treatment (see _SpreadsheetWidgetState); PDF sits
+      // inside the same unbounded outer document ListView, so it needs
+      // some explicit height rather than "fill remaining space".
+      height: MediaQuery.sizeOf(context).height * 0.92,
+      // PdfViewPinch (instead of the plain PdfView used before) gives each
+      // page its own independent pinch-to-zoom-and-pan, built on
+      // photo_view — a pinch now scales whichever page you're on, not the
+      // whole multi-page scroll as one flat unit. This is also why PDF is
+      // excluded from the shared document-level InteractiveViewer in
+      // ViewerScreen (see the isPdf comment there): the two would
+      // otherwise compete for the same pinch gesture.
+      child: PdfViewPinch(
+        controller: _ctrl,
+        scrollDirection: Axis.vertical,
+        onPageChanged: widget.onPageChanged,
+        backgroundDecoration: const BoxDecoration(color: Color(0xFFF0F0F0)),
+        builders: PdfViewPinchBuilders<DefaultBuilderOptions>(
+          options: const DefaultBuilderOptions(),
+          documentLoaderBuilder: (_) =>
+              const Center(child: CircularProgressIndicator()),
+          pageLoaderBuilder: (_) =>
+              const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          errorBuilder: (_, e) => Center(
+            child: Text('Không thể render trang: $e',
+                style: const TextStyle(color: Colors.red)),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 }
@@ -692,11 +630,14 @@ class _SpreadsheetWidgetState extends State<_SpreadsheetWidget> {
 
     // Bounded height: rows scroll *inside* the card instead of every row
     // being dumped into the outer document list — a 500-row sheet no
-    // longer means dragging the whole page a mile to reach row 500. Sized
-    // to feel close to full-screen (~75% of viewport height) rather than a
-    // small boxed-in panel; small sheets just fit exactly, no dead space.
-    final double maxBodyH = (MediaQuery.sizeOf(context).height * 0.75)
-        .clamp(360.0, 720.0)
+    // longer means dragging the whole page a mile to reach row 500.
+    // ~90% of viewport height — as close to true full-screen as this can
+    // get while still leaving a sliver of visible page around it (it lives
+    // inside the outer document ListView, which has no bounded height of
+    // its own to hand this an exact "fill remaining space" number). Small
+    // sheets just fit exactly, no dead space either way.
+    final double maxBodyH = (MediaQuery.sizeOf(context).height * 0.9)
+        .clamp(400.0, 900.0)
         .toDouble();
     final double naturalBodyH = rowCount * _cellH;
     final double bodyH = naturalBodyH < maxBodyH ? naturalBodyH : maxBodyH;

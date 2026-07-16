@@ -195,17 +195,25 @@ class TextRunBuilder {
     double lineHeightMultiplier = 1.2,
   }) {
     // Adapt the document's explicit color so it stays readable.
-    // DOCX files often hardcode black (0xFF000000) or white text. In dark mode
-    // that means near-invisible black on 0xFF1E1E1E; in light mode near-
-    // invisible white on 0xFFFAFAFA. Fall back to the theme's onSurface color
-    // when the document color would be illegible.
+    // DOCX files often hardcode black (0xFF000000) or white text, or a
+    // medium gray for de-emphasized labels. In dark mode, black — and even
+    // a mid-gray meant to read as "subtle" against white paper — becomes
+    // low-contrast against 0xFF1E1E1E; in light mode near-white does the
+    // same against 0xFFFAFAFA. The threshold is deliberately conservative
+    // (not just "technically distinguishable") — 0.4/0.5 rather than a
+    // near-black/near-white cutoff — because a color can be *readable* in
+    // the sense of computeLuminance() clearing a low bar while still being
+    // genuinely hard to read at body-text size. Fall back to the theme's
+    // own onSurface, which is chosen to contrast well with the current
+    // reading surface by construction, whenever a document color doesn't
+    // clearly clear that higher bar.
     Color color = baseColor;
     if (style.colorArgb != null) {
       final docColor  = Color(style.colorArgb!);
       final luminance = docColor.computeLuminance();
       final isLegible = isDark
-          ? luminance >= 0.15  // dark bg  → need bright-enough text
-          : luminance <= 0.85; // light bg → need dark-enough text
+          ? luminance >= 0.4  // dark bg  → need bright-enough text
+          : luminance <= 0.5; // light bg → need dark-enough text
       color = isLegible ? docColor : baseColor;
     }
 
