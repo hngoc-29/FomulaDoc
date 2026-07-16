@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:collection/collection.dart';
+import 'package:pdfx/pdfx.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:printing/printing.dart';
@@ -53,9 +54,35 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
   final _scaffoldKey         = GlobalKey<ScaffoldState>();
   final _sessionStopwatch    = Stopwatch();
 
-  double  _currentZoom    = AppConstants.defaultZoom;
-  // Deliberately separate from _currentZoom — see the comment above
-  // onInteractionUpdate for why.
+  // ── Live zoom % notifier ───────────────────────────────────────────────────
+  // Fires on every onInteractionUpdate frame so the AppBar % readout tracks
+  // the pinch in real-time WITHOUT rebuilding the entire Scaffold body.
+  // The old `setState(() => _currentZoom = s)` in onInteractionUpdate was a
+  // major source of the "khựng" (stutter) users felt during pinch-zoom: it
+  // rebuilt the whole Scaffold + AppBar + document tree on every frame.
+  // ValueNotifier + ValueListenableBuilder in the AppBar isolates the
+  // rebuild to just the small "100%" Text widget.
+  final ValueNotifier<double> _zoomNotifier =
+      ValueNotifier<double>(AppConstants.defaultZoom);
+
+  // ── Multi-touch state notifier ─────────────────────────────────────────────
+  // Fires when the second finger touches / lifts. Replaces the old
+  // `setState(() => _multiTouch = ...)` in the Listener's onPointerDown/Up/
+  // Cancel which rebuilt the whole Scaffold body on every finger transition
+  // — that rebuild mid-gesture was the second big stutter source, especially
+  // at the start of a pinch when the 2nd finger lands.
+  final ValueNotifier<bool> _multiTouchNotifier = ValueNotifier<bool>(false);
+
+  // Holds the live PdfControllerPinch when the open document is a PDF, so
+  // the AppBar zoom buttons can drive programmatic zoom via setZoom()
+  // (instead of the TransformationController, which is a no-op for PDF
+  // because scaleEnabled is forced off — see the isPdf comment in
+  // _buildDocumentView).
+  PdfControllerPinch? _pdfController;
+
+  // Deliberately separate from _zoomNotifier — see the comment above
+  // onInteractionUpdate for why this stays a plain bool field (only changes
+  // at gesture end / button press, never mid-frame).
   bool    _isZoomed        = false;
   bool    _showWarnings   = false;
   String? _currentFileId;
@@ -73,7 +100,6 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
   // "scroll mode" (1 finger at zoom=1) and "pan/zoom mode" (2 fingers or
   // any finger when scale > 1).
   int  _activePointers = 0;
-  bool _multiTouch     = false;
 
   // Note: previously there was a `_panActive` getter (true when zoomed OR
   // multi-touch) used to drive InteractiveViewer.panEnabled. That caused a
@@ -105,6 +131,8 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _transformController.dispose();
+    _zoomNotifier.dispose();
+    _multiTouchNotifier.dispose();
     _tts.stop();
     _sessionStopwatch.stop();
     // Fire-and-forget: dispose() can't be async, and this is a best-effort
@@ -117,6 +145,9 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
 
   Future<void> _openDocumentIfNeeded() async {
     final notifier = ref.read(documentNotifierProvider.notifier);
+    // Clear any stale PDF controller from a previously-opened document so
+    // _applyZoom doesn't accidentally drive a disposed controller.
+    _pdfController = null;
     if (widget.source != null) {
       await notifier.open(widget.source!);
     } else if (widget.filePath != null) {
@@ -245,11 +276,25 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
 
   void _applyZoom(double zoom) {
     final clamped = zoom.clamp(AppConstants.minZoom, AppConstants.maxZoom);
+    _zoomNotifier.value = clamped;
     setState(() {
-      _currentZoom = clamped;
       _isZoomed    = clamped > 1.005;
     });
-    _transformController.value = Matrix4.diagonal3Values(clamped, clamped, 1);
+    // For PDF, drive the PdfControllerPinch's own zoom instead of the
+    // (ineffective-for-PDF) TransformationController — scaleEnabled is
+    // forced off for PDF inside the InteractiveViewer below, so writing to
+    // _transformController would be a silent no-op.
+    final isPdf = (ref.read(documentNotifierProvider).currentFileName ?? '')
+        .toLowerCase().endsWith('.pdf');
+    if (isPdf && _pdfController != null) {
+      // setZoom is async but we don't need to await it: pdfx schedules the
+      // zoom animation on its own internal ticker. Wrap in unawaited()
+      // (from dart:async, already imported) to make the discard explicit
+      // and silence both `discarded_futures` and `unawaited_futures` lints.
+      unawaited(_pdfController!.setZoom(clamped));
+    } else {
+      _transformController.value = Matrix4.diagonal3Values(clamped, clamped, 1);
+    }
   }
 
   // ── Table of contents ─────────────────────────────────────────────────────
@@ -781,7 +826,7 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
           // ── AppBar ────────────────────────────────────────────────────────
           _ViewerAppBar(
             state:        state,
-            currentZoom:  _currentZoom,
+            currentZoom:  _zoomNotifier,
             readingTheme: readingTheme,
             isSpeaking:   _isSpeaking,
             onBack:      () {
@@ -791,8 +836,8 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
               ref.read(searchNotifierProvider.notifier).close();
               Navigator.of(context).pop();
             },
-            onZoomIn:    () => _applyZoom(_currentZoom + 0.25),
-            onZoomOut:   () => _applyZoom(_currentZoom - 0.25),
+            onZoomIn:    () => _applyZoom(_zoomNotifier.value + 0.25),
+            onZoomOut:   () => _applyZoom(_zoomNotifier.value - 0.25),
             onZoomReset: () => _applyZoom(1.0),
             onSearch:    () {
               ref.read(searchNotifierProvider.notifier).open();
@@ -863,16 +908,53 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
     ReadingThemeMode readingTheme,
     Color paperColor,
   ) {
-    // PDF pages render as flat images with no text layer (see
-    // _PdfDocumentWidget) — nothing here is selectable, and PdfViewPinch
-    // (used inside DocumentRendererWidget for pdf blocks) handles its own
-    // proper per-page pinch-zoom-and-pan via photo_view. The shared
-    // InteractiveViewer/AbsorbPointer below is for DOCX/XLSX zoom+select;
-    // for PDFs it's made inert (never pans/scales/absorbs) further down so
-    // it just gets out of the way instead of fighting PdfViewPinch for the
-    // same touches — that fight is what caused pinching a PDF to scale the
-    // whole multi-page canvas as one flat unit instead of one page.
     final isPdf = (state.currentFileName ?? '').toLowerCase().endsWith('.pdf');
+
+    // ── PDF: dedicated full-viewport pipeline ───────────────────────────────
+    // PDFs bypass the shared Listener + GestureDetector + InteractiveViewer +
+    // AbsorbPointer + DocumentRendererWidget(ListView) pipeline entirely.
+    // That pipeline was designed for DOCX/XLSX (text-selection + shared
+    // pinch-zoom), and forcing PDFs through it caused three problems:
+    //
+    //   1) "PDF loads incompletely" — PdfViewPinch was wrapped in a
+    //      SizedBox(height: 0.85 * screenHeight) INSIDE a ListView, so pdfx's
+    //      lazy renderer saw a tiny viewport nested in an outer scrollable
+    //      and skipped rasterizing pages whose render rect didn't intersect
+    //      that tiny viewport. Pages 2..N frequently rendered as blank.
+    //   2) Pinch stutter on PDF — the Listener's setState on every pointer
+    //      transition rebuilt the whole Scaffold body mid-gesture, and
+    //      InteractiveViewer's onInteractionUpdate setState did the same on
+    //      every frame. Both rebuilds are now gone (ValueNotifiers + this
+    //      dedicated branch).
+    //   3) AppBar zoom buttons were a no-op for PDF — they wrote to the
+    //      TransformationController that InteractiveViewer ignores for PDF
+    //      (scaleEnabled forced off). Now they drive PdfControllerPinch.setZoom
+    //      via _applyZoom → _pdfController.
+    //
+    // PdfViewPinch (inside PdfDocumentView) already owns its own per-page
+    // pinch-zoom-and-pan via photo_view, so it doesn't need any of the
+    // shared infrastructure.
+    if (isPdf) {
+      final pdfBlock = state.model!.blocks
+          .whereType<PdfDocumentBlock>()
+          .firstOrNull;
+      if (pdfBlock == null) {
+        return Container(
+          color: paperColor,
+          alignment: Alignment.center,
+          child: const Text('Không tìm thấy nội dung PDF.'),
+        );
+      }
+      return PdfDocumentView(
+        key: ValueKey('pdf-${pdfBlock.id}'),
+        block:         pdfBlock,
+        initialPage:   _currentPdfPage,
+        onPageChanged: _onPdfPageChanged,
+        onControllerCreated: (controller) {
+          _pdfController = controller;
+        },
+      );
+    }
 
     // ── Listener tracks active pointer count ────────────────────────────────
     // We use raw pointer events (not GestureDetector) so we can reliably
@@ -884,20 +966,20 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
         // As soon as a second finger touches, enable pan in InteractiveViewer
         // so the pinch-zoom gesture can include a pan component (Flutter
         // requires panEnabled:true for reliable multi-touch scale).
-        if (_activePointers >= 2 && !_multiTouch) {
-          setState(() => _multiTouch = true);
+        if (_activePointers >= 2 && !_multiTouchNotifier.value) {
+          _multiTouchNotifier.value = true;
         }
       },
       onPointerUp: (_) {
         if (_activePointers > 0) _activePointers--;
-        if (_activePointers < 2 && _multiTouch) {
-          setState(() => _multiTouch = false);
+        if (_activePointers < 2 && _multiTouchNotifier.value) {
+          _multiTouchNotifier.value = false;
         }
       },
       onPointerCancel: (_) {
         if (_activePointers > 0) _activePointers--;
-        if (_activePointers < 2 && _multiTouch) {
-          setState(() => _multiTouch = false);
+        if (_activePointers < 2 && _multiTouchNotifier.value) {
+          _multiTouchNotifier.value = false;
         }
       },
       child: LayoutBuilder(builder: (context, constraints) {
@@ -917,7 +999,7 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
           // against SelectionArea's own double-tap-to-select-word — the
           // recognizer simply doesn't exist until the user has zoomed in.
           //
-          // Gated on _isZoomed, NOT _currentZoom. _currentZoom updates on
+          // Gated on _isZoomed, NOT _zoomNotifier. _zoomNotifier updates on
           // every onInteractionUpdate frame *during* an active pinch: if
           // onDoubleTap flipped null→non-null mid-gesture, GestureDetector
           // has to instantiate a brand new DoubleTapGestureRecognizer and
@@ -929,122 +1011,130 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
           // existence is stable for the full duration of any single gesture.
           GestureDetector(
             behavior: HitTestBehavior.translucent,
-            onDoubleTap: (!isPdf && _isZoomed) ? () => _applyZoom(1.0) : null,
-            child: InteractiveViewer(
-            transformationController: _transformController,
-            minScale: AppConstants.minZoom,
-            maxScale: AppConstants.maxZoom,
-            constrained: false, // lets content exceed viewport when zoomed in
+            onDoubleTap: _isZoomed ? () => _applyZoom(1.0) : null,
+            // ValueListenableBuilder scopes the rebuild triggered by
+            // _multiTouchNotifier to JUST the InteractiveViewer subtree.
+            // Without this scoping, every pointer-down/up/cancel rebuilt
+            // the entire Scaffold body (AppBar + SearchBar + document tree)
+            // mid-gesture — that was the "khựng" / stutter users felt at
+            // the start of every pinch.
+            child: ValueListenableBuilder<bool>(
+              valueListenable: _multiTouchNotifier,
+              builder: (context, multiTouch, _) {
+                return InteractiveViewer(
+                  transformationController: _transformController,
+                  minScale: AppConstants.minZoom,
+                  maxScale: AppConstants.maxZoom,
+                  constrained: false, // lets content exceed viewport when zoomed in
 
-            // Scale (pinch) only during an actual 2-finger gesture — see the
-            // long comment above scaleEnabled below for why that one stays
-            // strictly multi-touch-gated.
-            //
-            // Pan is gated differently: multi-touch OR already zoomed in
-            // (_isZoomed — see the onDoubleTap comment above for why this
-            // isn't _currentZoom directly). At 1× zoom, single-finger drags
-            // are reserved for SelectionArea (this is what makes text
-            // selection work at all). But once the user has deliberately
-            // zoomed in, panning around with one finger is the expected
-            // behavior (same as Google Photos, Maps, etc.) — requiring 2
-            // fingers just to look around a zoomed page was needlessly
-            // awkward. This does reopen the same recognizer that competes
-            // with SelectionArea, but only *while already zoomed*, which is
-            // an acceptable trade: at that point the user has shown
-            // pan/inspect intent over select intent. If this makes
-            // selection flaky specifically while zoomed, that's the
-            // trade-off to revisit.
-            //
-            // Both flags are forced off entirely for PDF — see the isPdf
-            // comment at the top of this method.
-            panEnabled:   !isPdf && (_multiTouch || _isZoomed),
-            // Kept strictly multi-touch (and off entirely for PDF). Beyond
-            // the reasons above: InteractiveViewer uses a SINGLE
-            // ScaleGestureRecognizer for both single-finger pan and
-            // multi-finger pinch (that recognizer naturally handles 1-finger
-            // drags as "scale 1.0 + translation"), so leaving scaleEnabled
-            // always-on meant that recognizer stayed active and kept
-            // competing with SelectionArea's long-press recognizer for
-            // EVERY single-finger touch everywhere in the document — not
-            // just when zoomed — which is why text selection was unreliable
-            // across all file types, not only in one view.
-            scaleEnabled: !isPdf && _multiTouch,
+                  // Scale (pinch) only during an actual 2-finger gesture — see the
+                  // long comment above scaleEnabled below for why that one stays
+                  // strictly multi-touch-gated.
+                  //
+                  // Pan is gated differently: multi-touch OR already zoomed in
+                  // (_isZoomed — see the onDoubleTap comment above for why this
+                  // isn't _zoomNotifier directly). At 1× zoom, single-finger drags
+                  // are reserved for SelectionArea (this is what makes text
+                  // selection work at all). But once the user has deliberately
+                  // zoomed in, panning around with one finger is the expected
+                  // behavior (same as Google Photos, Maps, etc.) — requiring 2
+                  // fingers just to look around a zoomed page was needlessly
+                  // awkward. This does reopen the same recognizer that competes
+                  // with SelectionArea, but only *while already zoomed*, which is
+                  // an acceptable trade: at that point the user has shown
+                  // pan/inspect intent over select intent. If this makes
+                  // selection flaky specifically while zoomed, that's the
+                  // trade-off to revisit.
+                  panEnabled:   multiTouch || _isZoomed,
+                  // Kept strictly multi-touch. Beyond the reasons above:
+                  // InteractiveViewer uses a SINGLE ScaleGestureRecognizer for
+                  // both single-finger pan and multi-finger pinch (that
+                  // recognizer naturally handles 1-finger drags as "scale 1.0 +
+                  // translation"), so leaving scaleEnabled always-on meant that
+                  // recognizer stayed active and kept competing with
+                  // SelectionArea's long-press recognizer for EVERY
+                  // single-finger touch everywhere in the document — not just
+                  // when zoomed — which is why text selection was unreliable
+                  // across all file types, not only in one view.
+                  scaleEnabled: multiTouch,
 
-            onInteractionUpdate: (_) {
-              // Keep updating the live zoom-% readout every frame — but
-              // deliberately leave _isZoomed untouched here. See the
-              // onDoubleTap comment above for why.
-              final s = _transformController.value.getMaxScaleOnAxis();
-              if ((s - _currentZoom).abs() > 0.01) {
-                setState(() => _currentZoom = s);
-              }
-            },
-            onInteractionEnd: (_) {
-              // Gesture has fully ended — safe to settle _isZoomed now.
-              final s = _transformController.value.getMaxScaleOnAxis();
-              if (s <= 1.005) {
-                _transformController.value = Matrix4.identity();
-                if (_currentZoom != 1.0 || _isZoomed) {
-                  setState(() {
-                    _currentZoom = 1.0;
-                    _isZoomed    = false;
-                  });
-                }
-              } else if (!_isZoomed) {
-                setState(() => _isZoomed = true);
-              }
-            },
+                  onInteractionUpdate: (_) {
+                    // Update the live zoom-% readout every frame via the
+                    // notifier — no setState, so the only thing that
+                    // rebuilds is the small "100%" Text widget in the AppBar
+                    // (via ValueListenableBuilder). Deliberately leave
+                    // _isZoomed untouched here — see the onDoubleTap comment
+                    // above for why.
+                    final s = _transformController.value.getMaxScaleOnAxis();
+                    if ((s - _zoomNotifier.value).abs() > 0.01) {
+                      _zoomNotifier.value = s;
+                    }
+                  },
+                  onInteractionEnd: (_) {
+                    // Gesture has fully ended — safe to settle _isZoomed now.
+                    final s = _transformController.value.getMaxScaleOnAxis();
+                    if (s <= 1.005) {
+                      _transformController.value = Matrix4.identity();
+                      if (_zoomNotifier.value != 1.0 || _isZoomed) {
+                        _zoomNotifier.value = 1.0;
+                        setState(() => _isZoomed = false);
+                      }
+                    } else if (!_isZoomed) {
+                      setState(() => _isZoomed = true);
+                    }
+                  },
 
-            child: SizedBox(
-              // Explicit viewport dimensions give the inner ListView bounded
-              // height constraints (constrained:false would pass ∞ otherwise).
-              width:  viewW,
-              height: viewH,
-              child: AbsorbPointer(
-                // Only block child touch events during a 2-finger gesture
-                // (pinch) — and never for PDF, where there's no gesture to
-                // protect here (see the isPdf comment above) and blocking
-                // would just stop PdfViewPinch from seeing the pinch itself.
-                // Absorbing based on zoom level too would also
-                // block SelectionArea's long-press, preventing text copy
-                // entirely whenever the document is zoomed in.
-                absorbing: !isPdf && _multiTouch,
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(
-                        maxWidth: AppConstants.documentMaxWidth),
-                    child: Theme(
-                      // Reading theme (Sáng/Sepia/Tối/Tương phản cao) is a
-                      // per-viewer preference independent of the app's system
-                      // theme — document content is normally forced to
-                      // light/paper-white regardless of dark mode, but the
-                      // user can explicitly opt into one of 4 reading
-                      // surfaces here. text_run_builder already adapts
-                      // hardcoded document colors for legibility based on
-                      // Theme.of(context).brightness, so switching this is
-                      // sufficient for all 4 modes.
-                      data: AppTheme.forReadingMode(readingTheme),
-                      child: Container(
-                        color: paperColor,
-                        child: SelectionArea(
-                          child: DocumentRendererWidget(
-                            model:            state.model!,
-                            scrollController: _scrollController,
-                            onLinkTap:        _handleLinkTap,
-                            baseFontSize:     fontSize,
-                            lineSpacing:      lineSpacing,
-                            horizontalMargin: horizontalMargin,
-                            pdfInitialPage:   _currentPdfPage,
-                            onPdfPageChanged: _onPdfPageChanged,
+                  child: SizedBox(
+                    // Explicit viewport dimensions give the inner ListView bounded
+                    // height constraints (constrained:false would pass ∞ otherwise).
+                    width:  viewW,
+                    height: viewH,
+                    child: AbsorbPointer(
+                      // Only block child touch events during a 2-finger gesture
+                      // (pinch) — this is what stops SelectionArea from stealing
+                      // the pinch's two-finger drag. Absorbing based on zoom
+                      // level too would also block SelectionArea's long-press,
+                      // preventing text copy entirely whenever the document is
+                      // zoomed in.
+                      absorbing: multiTouch,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                              maxWidth: AppConstants.documentMaxWidth),
+                          child: Theme(
+                            // Reading theme (Sáng/Sepia/Tối/Tương phản cao) is a
+                            // per-viewer preference independent of the app's system
+                            // theme — document content is normally forced to
+                            // light/paper-white regardless of dark mode, but the
+                            // user can explicitly opt into one of 4 reading
+                            // surfaces here. text_run_builder already adapts
+                            // hardcoded document colors for legibility based on
+                            // Theme.of(context).brightness, so switching this is
+                            // sufficient for all 4 modes.
+                            data: AppTheme.forReadingMode(readingTheme),
+                            child: Container(
+                              color: paperColor,
+                              child: SelectionArea(
+                                child: DocumentRendererWidget(
+                                  model:            state.model!,
+                                  scrollController: _scrollController,
+                                  onLinkTap:        _handleLinkTap,
+                                  baseFontSize:     fontSize,
+                                  lineSpacing:      lineSpacing,
+                                  horizontalMargin: horizontalMargin,
+                                  pdfInitialPage:   _currentPdfPage,
+                                  onPdfPageChanged: _onPdfPageChanged,
+                                ),
+                              ),
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
-          ),
           ),
         ]);
       }),
@@ -1058,7 +1148,12 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
 
 class _ViewerAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final DocumentState state;
-  final double        currentZoom;
+  // ValueNotifier instead of plain double so the live zoom % readout
+  // can update every frame during a pinch WITHOUT rebuilding the entire
+  // AppBar (or the rest of the Scaffold body). The previous `setState(() =>
+  // _currentZoom = s)` in onInteractionUpdate rebuilt the whole tree on
+  // every frame, which was a major source of the pinch-zoom stutter.
+  final ValueListenable<double> currentZoom;
   final ReadingThemeMode readingTheme;
   final bool          isSpeaking;
   final VoidCallback  onBack;
@@ -1147,28 +1242,45 @@ class _ViewerAppBar extends ConsumerWidget implements PreferredSizeWidget {
           ),
 
         // Zoom controls
+        //
+        // All three (zoom_out, % readout, zoom_in) are wrapped in a single
+        // ValueListenableBuilder<double> on currentZoom so they rebuild
+        // TOGETHER and ONLY when the zoom value actually changes — not on
+        // every other state change in the AppBar. This keeps the live
+        // pinch-zoom readout smooth without cascading rebuilds to the rest
+        // of the AppBar (search button, popup menu, etc.).
         if (state.isLoaded) ...[
-          IconButton(
-            icon:      const Icon(Icons.zoom_out, size: 20),
-            tooltip:   'Thu nhỏ',
-            onPressed: currentZoom > AppConstants.minZoom ? onZoomOut : null,
-          ),
-          GestureDetector(
-            onTap: onZoomReset,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: Center(
-                child: Text(
-                  '${(currentZoom * 100).round()}%',
-                  style: const TextStyle(fontSize: 12, color: Colors.white70),
-                ),
-              ),
-            ),
-          ),
-          IconButton(
-            icon:      const Icon(Icons.zoom_in, size: 20),
-            tooltip:   'Phóng to',
-            onPressed: currentZoom < AppConstants.maxZoom ? onZoomIn : null,
+          ValueListenableBuilder<double>(
+            valueListenable: currentZoom,
+            builder: (context, zoom, _) {
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon:      const Icon(Icons.zoom_out, size: 20),
+                    tooltip:   'Thu nhỏ',
+                    onPressed: zoom > AppConstants.minZoom ? onZoomOut : null,
+                  ),
+                  GestureDetector(
+                    onTap: onZoomReset,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: Center(
+                        child: Text(
+                          '${(zoom * 100).round()}%',
+                          style: const TextStyle(fontSize: 12, color: Colors.white70),
+                        ),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon:      const Icon(Icons.zoom_in, size: 20),
+                    tooltip:   'Phóng to',
+                    onPressed: zoom < AppConstants.maxZoom ? onZoomIn : null,
+                  ),
+                ],
+              );
+            },
           ),
         ],
 

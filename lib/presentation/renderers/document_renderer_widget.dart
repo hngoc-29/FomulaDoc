@@ -106,7 +106,7 @@ class DocumentRendererWidget extends ConsumerWidget {
             block:     block,
             onLinkTap: onLinkTap,
           ),
-        PdfDocumentBlock()  => _PdfDocumentWidget(
+        PdfDocumentBlock()  => PdfDocumentView(
             block:         block,
             initialPage:   pdfInitialPage,
             onPageChanged: onPdfPageChanged,
@@ -489,17 +489,49 @@ class _ErrorBlock extends StatelessWidget {
 // PDF DOCUMENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _PdfDocumentWidget extends StatefulWidget {
-  const _PdfDocumentWidget({required this.block, this.initialPage = 1, this.onPageChanged});
+/// Public PDF renderer widget (extracted from the old private
+/// `_PdfDocumentWidget`).
+///
+/// Renders a [PdfDocumentBlock] as a full-viewport [PdfViewPinch] that
+/// owns its own scrolling and pinch-to-zoom-and-pan (built on photo_view).
+///
+/// Key differences from the old `_PdfDocumentWidget`:
+///  - No more `SizedBox(height: 0.85 * screenHeight)` constraint. The
+///    widget now expands to fill its parent's bounded constraints via
+///    [LayoutBuilder] + [SizedBox]. Constraining the PDF to ~85% of the
+///    screen was the root cause of "PDF loads incompletely": pdfx's
+///    lazy renderer only rasterizes pages whose render rect intersects
+///    the visible viewport, and a too-small viewport combined with the
+///    outer ListView's nested scrolling meant many pages were never
+///    asked to render. Giving it the full available height (and
+///    removing the outer ListView for PDFs in ViewerScreen) lets pdfx
+///    see a real viewport and lazy-render pages correctly as the user
+///    scrolls.
+///  - [onControllerCreated] exposes the [PdfControllerPinch] so the
+///    host screen can drive programmatic zoom (AppBar zoom buttons)
+///    via [PdfControllerPinch.setZoom] — previously the AppBar zoom
+///    buttons manipulated the InteractiveViewer's TransformationController
+///    which was a no-op for PDF because scaleEnabled was forced off.
+class PdfDocumentView extends StatefulWidget {
+  const PdfDocumentView({
+    super.key,
+    required this.block,
+    this.initialPage = 1,
+    this.onPageChanged,
+    this.onControllerCreated,
+  });
+
   final PdfDocumentBlock block;
   final int initialPage;
   final void Function(int page)? onPageChanged;
+  final void Function(PdfControllerPinch controller)? onControllerCreated;
+
   @override
-  State<_PdfDocumentWidget> createState() => _PdfDocumentWidgetState();
+  State<PdfDocumentView> createState() => _PdfDocumentViewState();
 }
 
-class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
-  late final PdfControllerPinch _ctrl;
+class _PdfDocumentViewState extends State<PdfDocumentView> {
+  PdfControllerPinch? _ctrl;
 
   @override
   void initState() {
@@ -508,42 +540,92 @@ class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
       document:    PdfDocument.openData(widget.block.bytes),
       initialPage: widget.initialPage,
     );
+    // Fire on the next frame so the host can store the controller
+    // before any potential pinch gesture arrives.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _ctrl != null) {
+        widget.onControllerCreated?.call(_ctrl!);
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant PdfDocumentView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // If the host passes a different PDF block (different identityHash of
+    // the bytes), the old controller is now stale and must be rebuilt
+    // against the new document. Without this, navigating between two PDFs
+    // would reuse the first PDF's controller — undefined behavior in pdfx
+    // and a real cause of "loads incompletely" on the second file.
+    if (!identical(oldWidget.block.bytes, widget.block.bytes)) {
+      final oldCtrl = _ctrl;
+      _ctrl = PdfControllerPinch(
+        document:    PdfDocument.openData(widget.block.bytes),
+        initialPage: widget.initialPage,
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _ctrl != null) {
+          widget.onControllerCreated?.call(_ctrl!);
+        }
+      });
+      oldCtrl?.dispose();
+    }
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    _ctrl?.dispose();
+    _ctrl = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: MediaQuery.of(context).size.height * 0.85,
-      // PdfViewPinch (instead of the plain PdfView used before) gives each
-      // page its own independent pinch-to-zoom-and-pan, built on
-      // photo_view — a pinch now scales whichever page you're on, not the
-      // whole multi-page scroll as one flat unit. This is also why PDF is
-      // excluded from the shared document-level InteractiveViewer in
-      // ViewerScreen (see the isPdf comment there): the two would
-      // otherwise compete for the same pinch gesture.
-      child: PdfViewPinch(
-        controller: _ctrl,
-        scrollDirection: Axis.vertical,
-        onPageChanged: widget.onPageChanged,
-        backgroundDecoration: const BoxDecoration(color: Color(0xFFF0F0F0)),
-        builders: PdfViewPinchBuilders<DefaultBuilderOptions>(
-          options: const DefaultBuilderOptions(),
-          documentLoaderBuilder: (_) =>
-              const Center(child: CircularProgressIndicator()),
-          pageLoaderBuilder: (_) =>
-              const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-          errorBuilder: (_, e) => Center(
-            child: Text('Không thể render trang: $e',
-                style: const TextStyle(color: Colors.red)),
+    // LayoutBuilder gives us the actual viewport the parent (the Expanded
+    // Stack in ViewerScreen) has reserved for the PDF — use its full
+    // height instead of guessing 0.85 * screenHeight. A too-small height
+    // was why pdfx skipped rendering pages: its renderer only rasterizes
+    // pages whose rect intersects the visible viewport, and an
+    // artificially small viewport meant many pages were never asked to
+    // render.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final h = constraints.maxHeight.isFinite
+            ? constraints.maxHeight
+            : MediaQuery.of(context).size.height;
+        final w = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.of(context).size.width;
+
+        return SizedBox(
+          width:  w,
+          height: h,
+          // PdfViewPinch gives each page its own independent
+          // pinch-to-zoom-and-pan, built on photo_view — a pinch now
+          // scales whichever page you're on, not the whole multi-page
+          // scroll as one flat unit. This is also why PDF is excluded
+          // from the shared document-level InteractiveViewer in
+          // ViewerScreen (see the isPdf comment there): the two would
+          // otherwise compete for the same pinch gesture.
+          child: PdfViewPinch(
+            controller: _ctrl!,
+            scrollDirection: Axis.vertical,
+            onPageChanged: widget.onPageChanged,
+            backgroundDecoration: const BoxDecoration(color: Color(0xFFF0F0F0)),
+            builders: PdfViewPinchBuilders<DefaultBuilderOptions>(
+              options: const DefaultBuilderOptions(),
+              documentLoaderBuilder: (_) =>
+                  const Center(child: CircularProgressIndicator()),
+              pageLoaderBuilder: (_) =>
+                  const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              errorBuilder: (_, e) => Center(
+                child: Text('Không thể render trang: $e',
+                    style: const TextStyle(color: Colors.red)),
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
