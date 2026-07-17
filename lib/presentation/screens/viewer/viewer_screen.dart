@@ -78,18 +78,6 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
   bool  _isSpeaking = false;
   int   _ttsBlockIndex = 0;
 
-  // ── Zoom / gesture tracking ────────────────────────────────────────────────
-  // Tracks how many fingers are currently on screen so we can switch between
-  // "scroll mode" (1 finger at zoom=1) and "pan/zoom mode" (2 fingers or
-  // any finger when scale > 1).
-  int  _activePointers = 0;
-  bool _multiTouch     = false;
-
-  // Note: previously there was a `_panActive` getter (true when zoomed OR
-  // multi-touch) used to drive InteractiveViewer.panEnabled. That caused a
-  // gesture-arena conflict with SelectionArea (see panEnabled comment below),
-  // so panEnabled now depends on `_multiTouch` alone.
-
   @override
   void initState() {
     super.initState();
@@ -876,40 +864,14 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
     // _PdfDocumentWidget) — nothing here is selectable, and PdfViewPinch
     // (used inside DocumentRendererWidget for pdf blocks) handles its own
     // proper per-page pinch-zoom-and-pan via photo_view. The shared
-    // InteractiveViewer/AbsorbPointer below is for DOCX/XLSX zoom+select;
+    // The shared InteractiveViewer below is for DOCX/XLSX zoom+select;
     // for PDFs it's made inert (never pans/scales/absorbs) further down so
     // it just gets out of the way instead of fighting PdfViewPinch for the
     // same touches — that fight is what caused pinching a PDF to scale the
     // whole multi-page canvas as one flat unit instead of one page.
     final isPdf = (state.currentFileName ?? '').toLowerCase().endsWith('.pdf');
 
-    // ── Listener tracks active pointer count ────────────────────────────────
-    // We use raw pointer events (not GestureDetector) so we can reliably
-    // count fingers without fighting the gesture arena.
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (_) {
-        _activePointers++;
-        // As soon as a second finger touches, enable pan in InteractiveViewer
-        // so the pinch-zoom gesture can include a pan component (Flutter
-        // requires panEnabled:true for reliable multi-touch scale).
-        if (_activePointers >= 2 && !_multiTouch) {
-          setState(() => _multiTouch = true);
-        }
-      },
-      onPointerUp: (_) {
-        if (_activePointers > 0) _activePointers--;
-        if (_activePointers < 2 && _multiTouch) {
-          setState(() => _multiTouch = false);
-        }
-      },
-      onPointerCancel: (_) {
-        if (_activePointers > 0) _activePointers--;
-        if (_activePointers < 2 && _multiTouch) {
-          setState(() => _multiTouch = false);
-        }
-      },
-      child: LayoutBuilder(builder: (context, constraints) {
+    return LayoutBuilder(builder: (context, constraints) {
         final viewW = constraints.maxWidth;
         final viewH = constraints.maxHeight;
 
@@ -945,39 +907,33 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
             maxScale: AppConstants.maxZoom,
             constrained: false, // lets content exceed viewport when zoomed in
 
-            // Scale (pinch) only during an actual 2-finger gesture — see the
-            // long comment above scaleEnabled below for why that one stays
-            // strictly multi-touch-gated.
-            //
-            // Pan is gated differently: multi-touch OR already zoomed in
-            // (_isZoomed — see the onDoubleTap comment above for why this
-            // isn't the live per-frame zoom value). At 1× zoom, single-finger
-            // drags are reserved for SelectionArea (this is what makes text
-            // selection work at all). But once the user has deliberately
-            // zoomed in, panning around with one finger is the expected
-            // behavior (same as Google Photos, Maps, etc.) — requiring 2
-            // fingers just to look around a zoomed page was needlessly
-            // awkward. This does reopen the same recognizer that competes
-            // with SelectionArea, but only *while already zoomed*, which is
-            // an acceptable trade: at that point the user has shown
-            // pan/inspect intent over select intent. If this makes
-            // selection flaky specifically while zoomed, that's the
-            // trade-off to revisit.
-            //
-            // Both flags are forced off entirely for PDF — see the isPdf
-            // comment at the top of this method.
-            panEnabled:   !isPdf && (_multiTouch || _isZoomed),
-            // Kept strictly multi-touch (and off entirely for PDF). Beyond
-            // the reasons above: InteractiveViewer uses a SINGLE
-            // ScaleGestureRecognizer for both single-finger pan and
-            // multi-finger pinch (that recognizer naturally handles 1-finger
-            // drags as "scale 1.0 + translation"), so leaving scaleEnabled
-            // always-on meant that recognizer stayed active and kept
-            // competing with SelectionArea's long-press recognizer for
-            // EVERY single-finger touch everywhere in the document — not
-            // just when zoomed — which is why text selection was unreliable
-            // across all file types, not only in one view.
-            scaleEnabled: !isPdf && _multiTouch,
+            // Pan and scale are always on for non-PDF (standard
+            // InteractiveViewer usage — no reactive gating). They used to
+            // be gated behind a hand-rolled "count active pointers, then
+            // setState to flip these flags" mechanism, meant to keep
+            // single-finger drags free for SelectionArea. That mechanism
+            // was the actual bug behind "pinch doesn't register at 100%"
+            // and the intermittent stutter: the moment a 2nd finger touches
+            // down, Flutter hit-tests and attaches recognizers using
+            // whatever panEnabled/scaleEnabled *already were* at that exact
+            // frame — still false, since the setState() reacting to that
+            // same touch hasn't rebuilt anything yet. InteractiveViewer's
+            // recognizer would miss that pointer entirely and never get
+            // another chance to claim it, which is why zoom would
+            // sometimes just not start, or only partly track the gesture.
+            // That's not a timing issue worth patching further — reactively
+            // flipping these flags on every pointer up/down was fighting
+            // InteractiveViewer's normal design, which assumes they're
+            // stable. SelectionArea's long-press-to-select is a distinct,
+            // time-based gesture (hold still first) that doesn't compete
+            // with a drag/scale recognizer the same way a quick swipe
+            // would, so it should still get a fair shot at the arena
+            // without this. If that turns out wrong and text selection
+            // gets flaky specifically at 1× zoom, that's the trade-off to
+            // revisit — but zoom/pan reliability was the active complaint,
+            // and this is InteractiveViewer's standard, well-tested mode.
+            panEnabled:   !isPdf,
+            scaleEnabled: !isPdf,
 
             onInteractionUpdate: (_) {
               // Write straight to the ValueNotifier — no setState here.
@@ -1011,26 +967,24 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
               // height constraints (constrained:false would pass ∞ otherwise).
               width:  viewW,
               height: viewH,
-              child: AbsorbPointer(
-                // Only block child touch events during a 2-finger gesture
-                // (pinch) — and never for PDF, where there's no gesture to
-                // protect here (see the isPdf comment above) and blocking
-                // would just stop PdfViewPinch from seeing the pinch itself.
-                // Absorbing based on zoom level too would also
-                // block SelectionArea's long-press, preventing text copy
-                // entirely whenever the document is zoomed in.
-                absorbing: !isPdf && _multiTouch,
-                // No Center/ConstrainedBox(maxWidth: documentMaxWidth) here
-                // anymore — that capped every file type's reading column at
-                // 780px, centered with empty space on either side on any
-                // screen wider than that (tablets, landscape, wide phones).
-                // Content now fills the full available width for DOCX, PDF,
-                // and XLSX alike. documentMaxWidth itself is kept for
-                // _ImageWidget, which still needs *some* sane ceiling for an
-                // embedded image with no explicit size of its own — that
-                // usage now derives from the actual available width instead
-                // of this constant, so it stays consistent with this change.
-                child: Theme(
+              // No AbsorbPointer here anymore — it used to block child
+              // (SelectionArea) touches specifically during a 2-finger
+              // gesture, as part of the same reactive multi-touch
+              // machinery removed above. SelectionArea's selection-extend
+              // handling is inherently single-pointer, so it was never
+              // actually going to react to a 2nd finger joining; the
+              // extra layer wasn't earning its complexity.
+              // No Center/ConstrainedBox(maxWidth: documentMaxWidth) here
+              // either — that capped every file type's reading column at
+              // 780px, centered with empty space on either side on any
+              // screen wider than that (tablets, landscape, wide phones).
+              // Content now fills the full available width for DOCX, PDF,
+              // and XLSX alike. documentMaxWidth itself is kept for
+              // _ImageWidget, which still needs *some* sane ceiling for an
+              // embedded image with no explicit size of its own — that
+              // usage now derives from the actual available width instead
+              // of this constant, so it stays consistent with this change.
+              child: Theme(
                   // Reading theme (Sáng/Sepia/Tối/Tương phản cao) is a
                   // per-viewer preference independent of the app's system
                   // theme — document content is normally forced to
@@ -1060,10 +1014,8 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
               ),
             ),
           ),
-          ),
         ]);
-      }),
-    );
+      });
   }
 }
 
