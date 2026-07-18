@@ -515,12 +515,12 @@ class _PdfDocumentWidget extends StatefulWidget {
 }
 
 class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
-  late final PdfControllerPinch _ctrl;
+  late final PdfController _ctrl;
 
   @override
   void initState() {
     super.initState();
-    _ctrl = PdfControllerPinch(
+    _ctrl = PdfController(
       document:    PdfDocument.openData(widget.block.bytes),
       initialPage: widget.initialPage,
     );
@@ -535,24 +535,25 @@ class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      // ~92% of viewport — consistent with the XLSX grid card getting the
-      // same full-screen treatment (see _SpreadsheetWidgetState); PDF sits
-      // inside the same unbounded outer document ListView, so it needs
-      // some explicit height rather than "fill remaining space".
+      // Explicit height because PdfView sits inside the outer document
+      // ListView, which gives it unbounded height otherwise — not
+      // optional, PdfView needs *some* concrete size to lay out in.
       height: MediaQuery.sizeOf(context).height * 0.92,
-      // PdfViewPinch (instead of the plain PdfView used before) gives each
-      // page its own independent pinch-to-zoom-and-pan, built on
-      // photo_view — a pinch now scales whichever page you're on, not the
-      // whole multi-page scroll as one flat unit. This is also why PDF is
-      // excluded from the shared document-level InteractiveViewer in
-      // ViewerScreen (see the isPdf comment there): the two would
-      // otherwise compete for the same pinch gesture.
-      child: PdfViewPinch(
+      // Plain PdfView/PdfController, pdfx's own defaults otherwise (no
+      // pageSnapping/scrollDirection override). This used to be
+      // PdfViewPinch for independent per-page pinch-zoom, which turned out
+      // to be a swipe-*paged* gallery under the hood (photo_view's
+      // PhotoViewGallery) rather than a continuous scroll — a multi-page
+      // PDF would only ever show page 1 through normal scrolling, which
+      // read as the document losing content partway through. Reliably
+      // reading the whole document matters more than independent per-page
+      // zoom, so back to the plain widget and the library's own default
+      // interaction model rather than layering more custom behavior on
+      // top of it.
+      child: PdfView(
         controller: _ctrl,
-        scrollDirection: Axis.vertical,
         onPageChanged: widget.onPageChanged,
-        backgroundDecoration: const BoxDecoration(color: Color(0xFFF0F0F0)),
-        builders: PdfViewPinchBuilders<DefaultBuilderOptions>(
+        builders: PdfViewBuilders<DefaultBuilderOptions>(
           options: const DefaultBuilderOptions(),
           documentLoaderBuilder: (_) =>
               const Center(child: CircularProgressIndicator()),

@@ -62,11 +62,6 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
   // ValueListenableBuilder, scoping the rebuild to just the "100%" text.
   final ValueNotifier<double> _zoomNotifier =
       ValueNotifier<double>(AppConstants.defaultZoom);
-  // Deliberately separate from _zoomNotifier — see the comment above
-  // onInteractionUpdate for why this stays a plain bool + setState (it only
-  // changes at gesture end / button press, never on a per-frame update, so
-  // there's no smoothness cost to it triggering a normal rebuild).
-  bool    _isZoomed        = false;
   bool    _showWarnings   = false;
   String? _currentFileId;
   Timer?  _scrollSaveTimer;
@@ -245,7 +240,6 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
   void _applyZoom(double zoom) {
     final clamped = zoom.clamp(AppConstants.minZoom, AppConstants.maxZoom);
     _zoomNotifier.value = clamped;
-    setState(() => _isZoomed = clamped > 1.005);
     _transformController.value = Matrix4.diagonal3Values(clamped, clamped, 1);
   }
 
@@ -860,17 +854,6 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
     ReadingThemeMode readingTheme,
     Color paperColor,
   ) {
-    // PDF pages render as flat images with no text layer (see
-    // _PdfDocumentWidget) — nothing here is selectable, and PdfViewPinch
-    // (used inside DocumentRendererWidget for pdf blocks) handles its own
-    // proper per-page pinch-zoom-and-pan via photo_view. The shared
-    // The shared InteractiveViewer below is for DOCX/XLSX zoom+select;
-    // for PDFs it's made inert (never pans/scales/absorbs) further down so
-    // it just gets out of the way instead of fighting PdfViewPinch for the
-    // same touches — that fight is what caused pinching a PDF to scale the
-    // whole multi-page canvas as one flat unit instead of one page.
-    final isPdf = (state.currentFileName ?? '').toLowerCase().endsWith('.pdf');
-
     return LayoutBuilder(builder: (context, constraints) {
         final viewW = constraints.maxWidth;
         final viewH = constraints.maxHeight;
@@ -882,83 +865,36 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
           // never sees the dark Scaffold background.
           Container(color: paperColor),
 
-          // Double-tap-to-reset-zoom. GestureDetector only instantiates a
-          // DoubleTapGestureRecognizer when onDoubleTap is non-null, so at
-          // normal 1× zoom (callback = null) this adds zero competition
-          // against SelectionArea's own double-tap-to-select-word — the
-          // recognizer simply doesn't exist until the user has zoomed in.
-          //
-          // Gated on _isZoomed, NOT the live zoom value. That value updates
-          // every onInteractionUpdate frame *during* an active pinch: if
-          // onDoubleTap flipped null→non-null mid-gesture, GestureDetector
-          // has to instantiate a brand new DoubleTapGestureRecognizer and
-          // insert it into an arena that's already mid-resolution for the
-          // pinch — which was derailing the in-progress scale gesture
-          // entirely (pinching in would stop increasing the zoom % partway
-          // through). _isZoomed only changes in onInteractionEnd/_applyZoom,
-          // never while a gesture is actively updating, so this recognizer's
-          // existence is stable for the full duration of any single gesture.
-          GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onDoubleTap: (!isPdf && _isZoomed) ? () => _applyZoom(1.0) : null,
-            child: InteractiveViewer(
+          // Plain InteractiveViewer, plain defaults — panEnabled and
+          // scaleEnabled are left unset (both default to true) instead of
+          // being reactively gated. Every attempt at gating them (multi-
+          // touch pointer counting, then an _isZoomed flag) to keep
+          // single-finger drags free for SelectionArea ended up being the
+          // actual source of a real bug — either the recognizer missing a
+          // 2nd finger's touch-down because the gating flags hadn't
+          // rebuilt yet, or double-tap thrashing mid-gesture. None of that
+          // is worth it: SelectionArea's long-press-to-select is a
+          // distinct, time-based gesture that gets a fair shot in the
+          // arena against a drag/scale recognizer on its own, without any
+          // of this. The double-tap-to-reset-zoom gesture that used to
+          // live here is gone too — it's redundant with tapping the zoom
+          // percentage in the toolbar (onZoomReset), and was one more
+          // custom gesture recognizer competing for the same touches.
+          InteractiveViewer(
             transformationController: _transformController,
             minScale: AppConstants.minZoom,
             maxScale: AppConstants.maxZoom,
             constrained: false, // lets content exceed viewport when zoomed in
-
-            // Pan and scale are always on for non-PDF (standard
-            // InteractiveViewer usage — no reactive gating). They used to
-            // be gated behind a hand-rolled "count active pointers, then
-            // setState to flip these flags" mechanism, meant to keep
-            // single-finger drags free for SelectionArea. That mechanism
-            // was the actual bug behind "pinch doesn't register at 100%"
-            // and the intermittent stutter: the moment a 2nd finger touches
-            // down, Flutter hit-tests and attaches recognizers using
-            // whatever panEnabled/scaleEnabled *already were* at that exact
-            // frame — still false, since the setState() reacting to that
-            // same touch hasn't rebuilt anything yet. InteractiveViewer's
-            // recognizer would miss that pointer entirely and never get
-            // another chance to claim it, which is why zoom would
-            // sometimes just not start, or only partly track the gesture.
-            // That's not a timing issue worth patching further — reactively
-            // flipping these flags on every pointer up/down was fighting
-            // InteractiveViewer's normal design, which assumes they're
-            // stable. SelectionArea's long-press-to-select is a distinct,
-            // time-based gesture (hold still first) that doesn't compete
-            // with a drag/scale recognizer the same way a quick swipe
-            // would, so it should still get a fair shot at the arena
-            // without this. If that turns out wrong and text selection
-            // gets flaky specifically at 1× zoom, that's the trade-off to
-            // revisit — but zoom/pan reliability was the active complaint,
-            // and this is InteractiveViewer's standard, well-tested mode.
-            panEnabled:   !isPdf,
-            scaleEnabled: !isPdf,
 
             onInteractionUpdate: (_) {
               // Write straight to the ValueNotifier — no setState here.
               // This fires every single frame of an active pinch; a
               // setState() in this callback was rebuilding the entire
               // Scaffold body 60 times a second, which was the main cause
-              // of pinch-zoom feeling stuttery. _isZoomed deliberately
-              // stays untouched here too — see the onDoubleTap comment above
-              // for why.
+              // of pinch-zoom feeling stuttery.
               final s = _transformController.value.getMaxScaleOnAxis();
               if ((s - _zoomNotifier.value).abs() > 0.01) {
                 _zoomNotifier.value = s;
-              }
-            },
-            onInteractionEnd: (_) {
-              // Gesture has fully ended — safe to settle _isZoomed now (a
-              // real setState here is fine; it happens once per gesture,
-              // not once per frame).
-              final s = _transformController.value.getMaxScaleOnAxis();
-              if (s <= 1.005) {
-                _transformController.value = Matrix4.identity();
-                _zoomNotifier.value = 1.0;
-                if (_isZoomed) setState(() => _isZoomed = false);
-              } else if (!_isZoomed) {
-                setState(() => _isZoomed = true);
               }
             },
 
@@ -1013,7 +949,6 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
                 ),
               ),
             ),
-          ),
         ]);
       });
   }
