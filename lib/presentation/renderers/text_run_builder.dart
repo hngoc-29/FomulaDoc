@@ -240,7 +240,13 @@ class TextRunBuilder {
       fontSize:        fontSize,
       color:           color,
       backgroundColor: hlt,
-      fontFamily:      style.fontFamily,
+      // Deliberately NOT style.fontFamily. Source DOCX files mix whatever
+      // fonts their authors happened to use (Times New Roman, Calibri,
+      // old Vietnamese-specific encodings, ...) — inconsistent from one
+      // file to the next and not really "the document's identity" the way
+      // it might be in a DTP tool. Letting every run inherit BeVietnamPro
+      // from the theme instead gives every file the same deliberate,
+      // legible typographic voice rather than a grab-bag of source fonts.
       height:          lineHeight,
     );
   }

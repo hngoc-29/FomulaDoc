@@ -71,6 +71,13 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      // Be Vietnam Pro — designed with refined Vietnamese diacritic forms,
+      // not just Latin-with-Vietnamese-bolted-on. Cascades to every Text
+      // widget in the app via TextTheme/DefaultTextStyle, including the
+      // document reading surface (text_run_builder.dart no longer passes
+      // through the source document's own fontFamily, specifically so this
+      // is what actually renders rather than being overridden per-run).
+      fontFamily: 'BeVietnamPro',
       scaffoldBackgroundColor: const Color(0xFFF0F2F5),
 
       // ── AppBar ──────────────────────────────────────────────────────────
@@ -179,6 +186,7 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      fontFamily: 'BeVietnamPro',
       scaffoldBackgroundColor: const Color(0xFF121212),
 
       appBarTheme: const AppBarTheme(
