@@ -539,20 +539,22 @@ class _PdfDocumentWidgetState extends State<_PdfDocumentWidget> {
       // ListView, which gives it unbounded height otherwise — not
       // optional, PdfView needs *some* concrete size to lay out in.
       height: MediaQuery.sizeOf(context).height * 0.92,
-      // Plain PdfView/PdfController, pdfx's own defaults otherwise (no
-      // pageSnapping/scrollDirection override). This used to be
-      // PdfViewPinch for independent per-page pinch-zoom, which turned out
-      // to be a swipe-*paged* gallery under the hood (photo_view's
-      // PhotoViewGallery) rather than a continuous scroll — a multi-page
-      // PDF would only ever show page 1 through normal scrolling, which
-      // read as the document losing content partway through. Reliably
-      // reading the whole document matters more than independent per-page
-      // zoom, so back to the plain widget and the library's own default
-      // interaction model rather than layering more custom behavior on
-      // top of it.
+      // Restored to match the original, working config from before any of
+      // this session's PDF changes (checked directly against that commit,
+      // rather than assumed): pageSnapping and scrollDirection here were
+      // never the problem, and "use the library's plain default" doesn't
+      // actually mean *omitting* them — pdfx's real default for
+      // pageSnapping is true (snap-to-page), not false. Continuous scroll
+      // depends on this line explicitly overriding that default; leaving
+      // it out in the previous pass was overreach, not a fix. The actual
+      // bug was PdfViewPinch's PhotoViewGallery-based swipe-paging — a
+      // completely different widget, not a config value on this one.
       child: PdfView(
         controller: _ctrl,
+        scrollDirection: Axis.vertical,
+        pageSnapping: false,
         onPageChanged: widget.onPageChanged,
+        backgroundDecoration: const BoxDecoration(color: Color(0xFFF0F0F0)),
         builders: PdfViewBuilders<DefaultBuilderOptions>(
           options: const DefaultBuilderOptions(),
           documentLoaderBuilder: (_) =>
